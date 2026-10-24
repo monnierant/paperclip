@@ -127,6 +127,31 @@ lease timing; the other retains application-pool isolation, SQL timeout and
 expiry-during-lock checks. Server typecheck passes. Final review and CI status
 remain attached to the exact candidate revisions on the PRs.
 
+The final runner review found that a rejected persistence callback permanently
+poisoned later flushes, and an adoption authorization hook could be silently
+ignored without launch preparation. The runner now rejects that invalid option
+combination before registration. Persistence keeps the last successful revision,
+resets the next write after an uncertain outcome, and calculates queued deltas
+against successful state. Three persistence regressions cover failure before
+commit, a lost commit response, reconnection with the same lease and command,
+and a queued successor. Those tests and the adoption-option regression fail on
+the preceding implementation. The corrected controller/transport run passed
+432 of 433 tests; the unchanged child-diagnostics test exceeded its five-second
+timeout and passed a bounded isolated retry without changes. The failed attempt
+is retained. All 39 focused profile tests, both Runner TypeScript checks,
+protocol manifest/schema and module-boundary checks pass. The refreshed source
+profile is `sha256:fac29e13622eadf9ab6f6dd1c47b2384ffa6307a2edb942dd78d3aae8e8d501f`.
+This identity refresh is not new live-provider qualification.
+
+CI 40141476713 found a race in the new persistent-retention regression: an empty
+next-deadline value could mean a retry was still running. The test now waits for
+the owner's final deferral warning and exactly three failed attempts before
+checking three hours of simulated quiet time. All 39 retention tests pass with
+disposable Postgres. The first local run timed out in database setup; a warm retry
+passed with the same setup timeout. Product retry limits and quiet-time assertions
+are unchanged. The runner fixes belong to PR 1 and this test fix belongs to PR 2.
+Final CI/review results remain attached to each exact PR candidate.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
