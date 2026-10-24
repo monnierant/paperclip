@@ -80,6 +80,25 @@ it("closes persistent congestion on its pending-work deadline without another so
   f.delivery.dispose();
   expect(vi.getTimerCount()).toBe(0);
 });
+it.each([false, true])("preserves the overflow deadline across resubscription until delivery settles: %s", async settled => {
+  vi.useFakeTimers();
+  let release!: (event: LiveEvent) => void;
+  const f = fixture(vi.fn(() => new Promise<LiveEvent>(resolve => { release = resolve; })));
+  try {
+    f.subscribe(["run-1"]); f.delivery.enqueue(event());
+    f.delivery.enqueue({ ...event(2), payload: { ...event(2).payload, chunk: "x".repeat(LIVE_DELIVERY_MAX_BYTES) } });
+    expect(f.frames.at(-1)).toMatchObject({ type: "live.resync", revision: 1 });
+    await vi.advanceTimersByTimeAsync(4_000);
+    f.subscribe(["run-1"], 2);
+    expect(f.frames.at(-1)).toMatchObject({ type: "live.subscribed", revision: 2 });
+    expect(f.delivery.metrics().needsResync).toBe(false);
+    if (settled) { release(event()); await settle(); }
+    await vi.advanceTimersByTimeAsync(1_000);
+    if (settled) expect(f.socket.close).not.toHaveBeenCalled();
+    else expect(f.socket.close).toHaveBeenCalledWith(1013, "persistent event backlog");
+  } finally { f.delivery.dispose(); }
+  expect(vi.getTimerCount()).toBe(0);
+});
 it("recovers failed delivery reads through resync rather than silently claiming healthy streaming", async () => {
   const f = fixture(vi.fn(async () => { throw new Error("permission database unavailable"); }));
   f.subscribe(["run-1"]); f.delivery.enqueue(event()); await settle();

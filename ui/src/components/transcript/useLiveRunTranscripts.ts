@@ -149,13 +149,13 @@ export function useLiveRunTranscripts({
     return value;
   };
   const gapPendingRef = useRef(new Set<string>());
-  const historyReadsRef = useRef(new Map<string, AbortSignal>());
+  const refreshByRunRef = useRef(new Map<string, (force?: boolean) => void>());
   const requestCatchUp = (runId: string) => {
     if (gapPendingRef.current.has(runId)) return;
     gapPendingRef.current.add(runId);
     // Let an existing page finish; its persisted cursor decides whether another
     // read is needed. Cancelling it for a live gap can discard useful history.
-    if (!historyReadsRef.current.has(runId)) retry();
+    refreshByRunRef.current.get(runId)?.();
   };
   const bindLog = (runId: string, store: unknown, ref: unknown): "same" | "changed" | "stale" => {
     if (typeof ref !== "string" || !ref) return "same"; // Older servers omit stream identity.
@@ -394,7 +394,7 @@ export function useLiveRunTranscripts({
 
         if (event.type === "heartbeat.run.status") {
           const status = readString(payload["status"]) ?? "updated";
-          if (isTerminalStatus(status)) retry();
+          if (isTerminalStatus(status)) refreshByRunRef.current.get(runId)?.(true);
           appendChunks(runId, [{
             ts: event.createdAt,
             stream: isTerminalStatus(status) && status !== "succeeded" ? "stderr" : "system",
@@ -412,14 +412,17 @@ export function useLiveRunTranscripts({
     let cancelled = false;
     const controller = new AbortController();
     const inFlightRunIds = new Set<string>();
-    const retryTimers = new Set<number>();
+    const retryTimers = new Map<string, number>();
+    const pendingRefresh = new Set<string>();
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
+      if (cancelled || missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
+      pendingRefresh.delete(run.id);
+      window.clearTimeout(retryTimers.get(run.id));
+      retryTimers.delete(run.id);
       inFlightRunIds.add(run.id);
-      historyReadsRef.current.set(run.id, controller.signal);
       let failed = false;
       let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
@@ -467,11 +470,13 @@ export function useLiveRunTranscripts({
         }
       } finally {
         inFlightRunIds.delete(run.id);
-        if (historyReadsRef.current.get(run.id) === controller.signal) historyReadsRef.current.delete(run.id);
         if (!cancelled) {
-          if (failed && stream.healthy) {
-            const timer = window.setTimeout(() => { retryTimers.delete(timer); void readRunLog(run); }, LOG_POLL_INTERVAL_MS);
-            retryTimers.add(timer);
+          if (pendingRefresh.has(run.id)) {
+            missingTerminalLogRunIdsRef.current.delete(run.id);
+            void readRunLog(run);
+          } else if (failed && stream.healthy) {
+            const timer = window.setTimeout(() => { retryTimers.delete(run.id); void readRunLog(run); }, LOG_POLL_INTERVAL_MS);
+            retryTimers.set(run.id, timer);
           }
           setHydratedRunIds((prev) => {
             if (prev.has(run.id)) return prev;
@@ -483,11 +488,15 @@ export function useLiveRunTranscripts({
       }
     };
 
-    const readAll = async () => {
-      await Promise.all(readableRuns.map((run) => readRunLog(run)));
-    };
-
-    void readAll();
+    for (const run of readableRuns) {
+      refreshByRunRef.current.set(run.id, (force = false) => {
+        // A terminal notification has no source sequence. Finish the current
+        // page, then read once more without restarting any sibling's history.
+        if (force) { pendingRefresh.add(run.id); missingTerminalLogRunIdsRef.current.delete(run.id); }
+        void readRunLog(run);
+      });
+      void readRunLog(run);
+    }
     const activeRuns = readableRuns.filter((run) => run.status === "running");
     // The realtime websocket is the primary live source when enabled, so the
     // recurring poll only needs to run as a slow fallback rather than doubling
@@ -503,8 +512,9 @@ export function useLiveRunTranscripts({
 
     return () => {
       cancelled = true;
+      refreshByRunRef.current.clear();
       controller.abort();
-      for (const timer of retryTimers) window.clearTimeout(timer);
+      for (const timer of retryTimers.values()) window.clearTimeout(timer);
       if (interval !== null) window.clearInterval(interval);
     };
   }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration, enabled, companyId, stream.healthy, stream.epoch]);

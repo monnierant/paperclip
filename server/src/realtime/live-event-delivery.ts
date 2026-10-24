@@ -58,7 +58,7 @@ export function createLiveEventDelivery(input: {
     if (!congestionTimer) {
       congestionTimer = setTimeout(() => {
         congestionTimer = undefined;
-        if (needsResync || (socket.bufferedAmount ?? 0) >= LIVE_DELIVERY_MAX_BYTES / 2) socket.close(1013, "persistent event backlog");
+        if (needsResync || draining || (socket.bufferedAmount ?? 0) >= LIVE_DELIVERY_MAX_BYTES / 2) socket.close(1013, "persistent event backlog");
       }, CONGESTION_DEADLINE_MS);
       congestionTimer.unref?.();
     }
@@ -134,7 +134,9 @@ export function createLiveEventDelivery(input: {
       interests = new Set(message.runIds);
       needsResync = false;
       if (control({ type: "live.subscribed", version: 1, revision })) {
-        if ((socket.bufferedAmount ?? 0) < LIVE_DELIVERY_MAX_BYTES / 2 && congestionTimer) {
+        // Acknowledging new interests does not settle an old permission or
+        // decoration read. Preserve its original deadline until drain finishes.
+        if (!draining && (socket.bufferedAmount ?? 0) < LIVE_DELIVERY_MAX_BYTES / 2 && congestionTimer) {
           clearTimeout(congestionTimer); congestionTimer = undefined;
         }
       } else overflow();

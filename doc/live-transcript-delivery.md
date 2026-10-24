@@ -47,6 +47,7 @@ recurring poll or a recovery-checkpoint write.
 Live catch-up refreshes only the affected run. Each run has at most one history
 read in flight and one retry timer. Terminal notifications during a read coalesce
 into one subsequent read. A busy run cannot cancel a sibling's paginated history.
+This applies to both native commit signals and truncated legacy log chunks.
 
 Catch-up runs on subscription, reconnect, show, explicit resynchronization, gaps,
 and terminal status. Live catch-up drains pending pages. Failed reads retry even
@@ -68,6 +69,11 @@ queries because overflow can drop lifecycle messages. Persistent congestion
 closes the socket with code 1013 after five seconds; this timer exists only while
 congestion is pending. An older client is closed on overflow so its normal
 reconnect path can catch up.
+
+A new interest acknowledgement does not cancel the congestion deadline while an
+old authorization or decoration read remains in flight. If that read settles,
+the connection may recover; if it remains stalled, the original deadline closes
+the socket even without another source event.
 
 The server does not persist a browser-specific event backlog. Canonical history
 is the recovery source. Execution continues whether there are zero viewers or

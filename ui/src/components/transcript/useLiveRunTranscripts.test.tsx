@@ -12,7 +12,8 @@ import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
 const { useQueryMock, logMock, buildTranscriptMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
-  logMock: vi.fn(async () => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
+  logMock: vi.fn(async (_runId: string, _offset: number, _limit: number, _options: { signal: AbortSignal }) =>
+    ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
   buildTranscriptMock: vi.fn((chunks: unknown[]) => chunks),
 }));
 
@@ -799,6 +800,74 @@ describe("useLiveRunTranscripts", () => {
       const settledReads = logMock.mock.calls.length;
       await act(async () => vi.advanceTimersByTimeAsync(90_000));
       expect(logMock).toHaveBeenCalledTimes(settledReads);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("finishes slow legacy pages while a sibling catches up repeated truncated output", async () => {
+    vi.useFakeTimers();
+    let value: ReturnType<typeof useLiveRunTranscripts>;
+    function Harness() {
+      value = useLiveRunTranscripts({ companyId: "company-1", runs: [
+        { id: "run-1", status: "running", adapterType: "codex_local" },
+        { id: "slow", status: "succeeded", adapterType: "codex_local" },
+      ] });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    type Result = Awaited<ReturnType<typeof logMock>>;
+    const slow: Array<{ resolve: (value: Result) => void; signal: AbortSignal }> = [];
+    const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk }) + "\n";
+    let seq = 0;
+    try {
+      await act(async () => root.render(<Harness />));
+      logMock.mockImplementation(async (id, offset, _limit, { signal }) => {
+        if (id === "slow") return new Promise(resolve => slow.push({ resolve, signal }));
+        return { runId: id, store: "memory", logRef: "log-1", content: offset < seq ? row(seq, `complete ${seq}`) : "", nextOffset: seq };
+      });
+      await act(async () => negotiate());
+      for (seq = 1; seq <= 3; seq++) {
+        await act(async () => sendEvent({ companyId: "company-1", type: "heartbeat.run.log", createdAt: "2026-10-24T00:00:00Z",
+          payload: { runId: "run-1", seq, truncated: true } }));
+      }
+      expect(slow).toHaveLength(1);
+      expect(slow[0].signal.aborted).toBe(false);
+      expect(value!.transcriptByRun.get("run-1")).toEqual(expect.arrayContaining([expect.objectContaining({ seq: 3, chunk: "complete 3" })]));
+      await act(async () => slow[0].resolve({ runId: "slow", store: "memory", logRef: "log-1", content: row(1, "older output"), nextOffset: 1 }));
+      expect(slow).toHaveLength(2);
+      expect(slow[1].signal.aborted).toBe(false);
+      await act(async () => slow[1].resolve({ runId: "slow", store: "memory", logRef: "log-1", content: "", nextOffset: 1 }));
+      expect(value!.transcriptByRun.get("slow")).toEqual(expect.arrayContaining([expect.objectContaining({ chunk: "older output" })]));
+      const reads = logMock.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(90_000));
+      expect(logMock).toHaveBeenCalledTimes(reads);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("coalesces legacy terminal catch-up behind an in-flight read without aborting it", async () => {
+    let value: ReturnType<typeof useLiveRunTranscripts>;
+    function Harness() {
+      value = useLiveRunTranscripts({ companyId: "company-1", runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }] });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    let finish!: (result: Awaited<ReturnType<typeof logMock>>) => void;
+    try {
+      await act(async () => root.render(<Harness />));
+      logMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      await act(async () => negotiate());
+      const reads = logMock.mock.calls.length;
+      const signal = logMock.mock.calls.at(-1)![3].signal;
+      await act(async () => {
+        for (let i = 0; i < 3; i++) sendEvent({ companyId: "company-1", type: "heartbeat.run.status", createdAt: "2026-10-24T00:00:00Z",
+          payload: { runId: "run-1", status: "succeeded" } });
+      });
+      expect(signal.aborted).toBe(false);
+      expect(logMock).toHaveBeenCalledTimes(reads);
+      logMock.mockResolvedValueOnce({ runId: "run-1", store: "memory", logRef: "log-1", content:
+        JSON.stringify({ seq: 1, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk: "terminal output" }) + "\n", nextOffset: 1 });
+      await act(async () => finish({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 }));
+      expect(logMock).toHaveBeenCalledTimes(reads + 2);
+      expect(value!.transcriptByRun.get("run-1")).toEqual(expect.arrayContaining([expect.objectContaining({ chunk: "terminal output" })]));
     } finally { await act(async () => root.unmount()); }
   });
 
