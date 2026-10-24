@@ -70,6 +70,21 @@ congestion deadline. Browser-hook tests cover reference counting, acknowledgemen
 races, history/live ordering, failed reads, hide/show, company changes, terminal
 catch-up, and zero recurring reads after negotiation.
 
+Run the native browser journey with
+`pnpm exec playwright test --config tests/e2e/playwright-transcript-delivery.config.ts`.
+It uses the production runner and the existing deterministic Codex app-server
+fixture. It creates a task through the current composer, opens two views, verifies
+zero recurring transcript reads during settled streaming, changes companies,
+disconnects the presentation socket, and checks terminal output after reload.
+The fixture pins provider selection through the existing acceptance-only loader;
+it does not contact a real model or add a production admission option.
+
+The legacy journey is
+`pnpm exec playwright test --config tests/e2e/playwright.config.ts agent-chat-sessions.spec.ts --grep 'chat first open'`.
+Both use a disposable server and can use an explicitly supplied disposable
+`DATABASE_URL` when local embedded Postgres is unavailable. Browser fixtures
+establish delivery behavior, not native-provider or hosted-upgrade qualification.
+
 `server/src/realtime/live-event-delivery.cost.test.ts` compares identical output
 with zero interests, one viewer, three browser connections, and simulated socket
 congestion. Set `PAPERCLIP_LIVE_DELIVERY_COST_REPORT` to retain its JSON report.

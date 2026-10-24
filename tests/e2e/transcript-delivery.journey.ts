@@ -1,22 +1,36 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type WebSocket } from "@playwright/test";
 import { json } from "./agent-chat.shared";
 
 // The runner is real; Codex is the existing deterministic app-server fixture.
 // This qualifies browser delivery and terminal catch-up, not the Codex service.
 test("native transcript survives two views and reload through negotiated streaming", async ({ page, context, request }, info) => {
   test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    const sockets = new Set<globalThis.WebSocket>();
+    const OriginalWebSocket = window.WebSocket;
+    window.WebSocket = class extends OriginalWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (String(url).includes("/events/ws")) sockets.add(this);
+        this.addEventListener("close", () => sockets.delete(this));
+      }
+    };
+    Object.assign(window, { closeTranscriptTransport: () => {
+      for (const socket of sockets) socket.close();
+    } });
+  });
   const company = await json(await request.post("/api/companies", { data: { name: "Native transcript delivery" } }));
   const original = await json(await request.get("/api/instance/settings/experimental"));
   const frames: Array<{ type?: string; runIds?: string[]; revision?: number }> = [];
   let connections = 0;
-  let activeConnections = 0;
+  const activeConnections = new Set<WebSocket>();
   let transcriptReads = 0;
   page.on("request", request => { if (/\/heartbeat-runs\/[^/]+\/(events|log)(\?|$)/.test(request.url())) transcriptReads += 1; });
   page.on("websocket", socket => {
     if (!socket.url().includes("/events/ws")) return;
     connections += 1;
-    activeConnections += 1;
-    socket.on("close", () => { activeConnections -= 1; });
+    activeConnections.add(socket);
+    socket.on("close", () => { activeConnections.delete(socket); });
     socket.on("framesent", frame => { try { frames.push(JSON.parse(String(frame.payload))); } catch {} });
     socket.on("framereceived", frame => { try { frames.push(JSON.parse(String(frame.payload))); } catch {} });
   });
@@ -40,6 +54,10 @@ test("native transcript survives two views and reload through negotiated streami
     await expect.poll(async () => (await json(await request.get(`/api/companies/${company.id}/issues`))).length).toBe(1);
     const [issue] = await json(await request.get(`/api/companies/${company.id}/issues`));
     const route = `/${company.issuePrefix}/issues/${issue.identifier}`;
+    // A hard navigation destroys the previous JavaScript realm; Playwright
+    // does not report its WebSocket close consistently. Count this document.
+    activeConnections.clear();
+    frames.length = 0;
     await page.goto(route);
     let runId = "";
     await expect.poll(async () => {
@@ -60,7 +78,7 @@ test("native transcript survives two views and reload through negotiated streami
     await page.waitForTimeout(2_500); // Exceed the 2-second polling fallback.
     const healthyPollingReads = transcriptReads - healthyReads;
     expect(healthyPollingReads).toBe(0);
-    expect(activeConnections).toBe(1);
+    expect(activeConnections.size).toBe(1);
     const second = await context.newPage();
     await second.goto(route);
     const other = await json(await request.post("/api/companies", { data: { name: "Transcript isolation" } }));
@@ -70,6 +88,9 @@ test("native transcript survives two views and reload through negotiated streami
     await expect.poll(subscribed).toBe(true);
     const beforeReconnect = connections;
     await context.setOffline(true);
+    // Chromium offline emulation leaves existing WebSockets open. Close only
+    // the real presentation transport; application reconnect/catch-up is intact.
+    await page.evaluate(() => (window as unknown as { closeTranscriptTransport(): void }).closeTranscriptTransport());
     await page.waitForTimeout(1_000);
     await context.setOffline(false);
     await expect.poll(() => connections, { timeout: 15_000 }).toBeGreaterThan(beforeReconnect);
