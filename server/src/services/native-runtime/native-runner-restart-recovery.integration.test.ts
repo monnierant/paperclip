@@ -1,5 +1,5 @@
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
-import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
+import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
@@ -22,6 +22,7 @@ import {
   environmentLeases,
   environments,
   createDb,
+  closeLivenessDb,
   heartbeatRuns,
   heartbeatRunEvents,
   issueRecoveryActions,
@@ -822,6 +823,64 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(saved?.records);
     await authority.stop();
   });
+
+  it("renews remote ownership while the application pool is saturated and bounds row-lock waits", async () => {
+    const fixture = await seedRun("RENEWAL-LIVENESS-POOL");
+    const owner = createDb(temporary.connectionString, { maxConnections: 1 });
+    const input = { db: owner, runId: fixture.runId, companyId, issueId: fixture.issueId,
+      controller: successor, leaseOwner: "liveness-owner", attempt: 1, leaseTtlMs: 60_000 };
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      controllerPid: successor.pid, controllerProcessStartedAt: successor.processStartedAt,
+      leaseOwner: input.leaseOwner, attempt: 1, leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    let releaseLock: (() => void) | undefined;
+    let holder: Promise<void> | undefined;
+    let slow: Promise<unknown> | undefined;
+    try {
+      // Reserve the only application connection before renewing. The liveness
+      // pool must make progress without waiting for this application query.
+      let busy!: () => void;
+      const occupied = new Promise<void>(resolve => { busy = resolve; });
+      slow = owner.transaction(async tx => { busy(); await tx.execute(sql`select pg_sleep(3)`); });
+      await occupied;
+      const started = Date.now();
+      await renewNativeSessionExecutionLease(input);
+      expect(Date.now() - started).toBeLessThan(2_000);
+      await slow;
+      let taken!: () => void;
+      const locked = new Promise<void>(resolve => { taken = resolve; });
+      const released = new Promise<void>(resolve => { releaseLock = resolve; });
+      holder = fixture.db.transaction(async tx => {
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+        taken(); await released;
+      });
+      await locked;
+      const blocked = Date.now();
+      await expect(renewNativeSessionExecutionLease(input, { statementTimeoutMs: 200 })).rejects.toMatchObject({ cause: { code: "57014" } });
+      expect(Date.now() - blocked).toBeLessThan(2_000);
+      releaseLock!(); await holder;
+      await expect(renewNativeSessionExecutionLease(input)).resolves.toBeUndefined();
+      const [saved] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(saved.leaseOwner).toBe(input.leaseOwner);
+      expect(saved.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+      // A lock may be released before statement_timeout but after authority
+      // expires. The renewal must check wall time after obtaining that lock.
+      await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 500) })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      let expiryLockTaken!: () => void;
+      const expiryLocked = new Promise<void>(resolve => { expiryLockTaken = resolve; });
+      holder = fixture.db.transaction(async tx => {
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+        expiryLockTaken(); await tx.execute(sql`select pg_sleep(1)`);
+      });
+      await expiryLocked;
+      await expect(renewNativeSessionExecutionLease(input)).rejects.toThrow("native_session_lease_lost");
+      await holder;
+    } finally {
+      releaseLock?.(); await holder; await slow;
+      await closeLivenessDb(owner, 1); await owner.$client.end({ timeout: 1 });
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("renews a remote claim through slow preparation and shares renewal with execution", async () => {
     const fixture = await seedRun("SLOW-RECOVERY-PREPARATION");

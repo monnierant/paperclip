@@ -7411,7 +7411,8 @@ describe("native session execution lease fencing", () => {
       .mockResolvedValueOnce([]);
     const where = vi.fn(() => ({ returning }));
     const set = vi.fn(() => ({ where }));
-    const db = { update: vi.fn(() => ({ set })) } as unknown as Db;
+    const update = vi.fn(() => ({ set }));
+    const db = { update, transaction: async (run: (tx: unknown) => Promise<unknown>) => run({ update, execute: vi.fn() }) } as unknown as Db;
     const input = {
       db,
       runId: "run-lease",
@@ -7805,7 +7806,7 @@ describe("native warm session supervision", () => {
     const { promisify } = await import("node:util");
     const { execFile } = await import("node:child_process");
     const executeCommand = promisify(execFile);
-    const { startEmbeddedPostgresTestDatabase } = await import("../../__tests__/helpers/embedded-postgres.js");
+    const { startRecoveryPostgres } = await import("../../__tests__/helpers/recovery-postgres.js");
     const { agentInstructionWorkingCopyService } = await import("../agent-instruction-working-copies.js");
     const { buildNativeRuntimeContext } = await import("./runtime-context.js");
     const { prepareNativeHeartbeatRun } = await import("./prepare-native-run.js");
@@ -7813,7 +7814,7 @@ describe("native warm session supervision", () => {
     const home = await realpath(await mkdtemp(join(tmpdir(), "warm-remote-db-")));
     const previousHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_HOME = home;
-    const database = await startEmbeddedPostgresTestDatabase("warm-remote-db-");
+    const database = await startRecoveryPostgres("warm-remote-db-");
     const db = tables.createDb(database.connectionString);
     const companyId = randomUUID(), agentId = randomUUID(), userId = randomUUID(), environmentId = randomUUID(), issueId = randomUUID();
     const { resolveManagedInstructionsRoot } = await import("../agent-instructions.js");

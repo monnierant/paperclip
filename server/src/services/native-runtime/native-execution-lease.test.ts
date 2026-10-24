@@ -5,7 +5,8 @@ import { startNativeSessionExecutionLeaseRenewal } from "./native-execution-leas
 function fixture() {
   const returning = vi.fn(async () => [{ runId: "run" }]);
   const update = vi.fn(() => ({ set: () => ({ where: () => ({ returning }) }) }));
-  return { update, returning, input: { db: { update } as unknown as Db, runId: "run", companyId: "company", issueId: "issue",
+  const db = { update, transaction: async (run: (tx: unknown) => Promise<unknown>) => run({ update, execute: vi.fn() }) };
+  return { update, returning, input: { db: db as unknown as Db, runId: "run", companyId: "company", issueId: "issue",
     leaseOwner: "owner", attempt: 1, controller: { bootId: "boot", pid: 1, processStartedAt: new Date() }, remote: true,
     onLost: vi.fn(async () => undefined) } };
 }
@@ -28,13 +29,39 @@ describe("native execution renewal ownership", () => {
     expect(update).toHaveBeenCalledTimes(3);
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("retries cancelled SQL within the original deadline without losing healthy ownership", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    returning.mockRejectedValueOnce(Object.assign(new Error("statement timeout"), { code: "57014" }));
+    const guard = startNativeSessionExecutionLeaseRenewal(input);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(returning).toHaveBeenCalledTimes(3);
+    expect(input.onLost).not.toHaveBeenCalled();
+    await guard.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("detaches at the deadline while a database response is missing and cannot regain authority from a late response", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    let complete!: (value: { runId: string }[]) => void;
+    returning.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const guard = startNativeSessionExecutionLeaseRenewal(input);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(returning).toHaveBeenCalledTimes(1);
+    expect(input.onLost).toHaveBeenCalledTimes(1);
+    complete([{ runId: "run" }]);
+    await expect(guard.stop()).rejects.toThrow("native_session_lease_renewal_deadline");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(returning).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("does not queue SQL behind a slow renewal and fences a lost owner", async () => {
     vi.useFakeTimers();
     const { input, update, returning } = fixture();
     let complete!: (value: { runId: string }[]) => void;
     returning.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
     const guard = startNativeSessionExecutionLeaseRenewal(input);
-    await vi.advanceTimersByTimeAsync(100_000);
+    await vi.advanceTimersByTimeAsync(50_000);
     expect(update).toHaveBeenCalledTimes(1);
     complete([]);
     await vi.advanceTimersByTimeAsync(100_000);

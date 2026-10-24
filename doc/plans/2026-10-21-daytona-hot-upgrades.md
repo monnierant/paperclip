@@ -506,3 +506,22 @@ that lease, transfers the renewal reference to execution, and verifies a competi
 controller cannot take over. Unit gates prove one renewal per interval and zero
 SQL after the final release. The plugin adoption lifecycle fixture now uses the
 current `adoptIdentity` contract and cleans up its owned database.
+
+### Renewal isolation and bounded waits (2026-10-24)
+
+Native renewal uses the existing two-connection liveness pool, shared per database
+client with legacy controller renewal. It does not queue behind unrelated
+application queries. Each attempt locks the coordinator row, then checks current expiry and performs
+one fenced update in a transaction with a local 10-second statement timeout.
+Checking after the lock prevents renewal from reviving an owner that expired
+while the statement waited. A cancelled statement can retry on the next
+20-second tick without extending the 60-second remote ownership deadline. No
+overlapping attempts are queued. A missing response reaches the local deadline
+and detaches authority; a late response cannot restore it. Final release stops
+both timers and drains the in-flight attempt. Idle instances issue no renewal SQL.
+
+This adds transaction, timeout-setting and row-lock statements around each
+active lease update. It does not add text checkpoints or change the idle-SQL gate. The SQL cost
+comparison for text chunks excludes periodic lease renewal, so it does not measure
+this active-run overhead. Saturated-pool and row-lock tests use real Postgres;
+clock tests separately exercise response loss, retry and shutdown.
