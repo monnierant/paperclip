@@ -17,6 +17,10 @@ export class TranscriptSequence {
     this.observed = Math.max(this.observed, seq);
   }
 
+  requireHistory(seq: number | undefined): void {
+    if (seq !== undefined) this.missingThrough = Math.max(this.missingThrough, seq);
+  }
+
   get needsCatchup(): boolean {
     return this.missingThrough > this.persisted;
   }

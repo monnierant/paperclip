@@ -22,3 +22,14 @@ it("accepts out-of-order and duplicate stream rows without advancing the history
   expect(cursor.observe(21)).toBe(false);
   expect(cursor.persisted).toBe(20);
 });
+
+it("keeps a consecutive truncated row pending beyond an older history response", () => {
+  const cursor = new TranscriptSequence();
+  cursor.confirm(10);
+  cursor.requireHistory(11);
+  expect(cursor.observe(11)).toBe(true);
+  cursor.confirm(10);
+  expect(cursor.needsCatchup).toBe(true);
+  cursor.confirm(11);
+  expect(cursor.needsCatchup).toBe(false);
+});

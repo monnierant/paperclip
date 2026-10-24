@@ -3855,7 +3855,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       const binding = bindLog(payload.logRef);
       if (binding === "stale") return;
       const seq = readChunkSeq(payload.seq);
-      if (binding === "changed" || payload.truncated === true || logSequenceRef.current.observe(seq)) requestCatchup();
+      if (payload.truncated === true) logSequenceRef.current.requireHistory(seq);
+      const gap = logSequenceRef.current.observe(seq);
+      if (binding === "changed" || payload.truncated === true || gap) requestCatchup();
       if (payload.truncated === true) return;
       const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
       if (!chunk) return;
@@ -3892,7 +3894,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         for (;;) {
           const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
           if (cancelled) return;
-          setEvents(previous => mergeRunEvents(previous, rows).slice(-MAX_LIVE_EVENTS));
+          setEvents(previous => {
+            const merged = mergeRunEvents(previous, rows);
+            return isLive ? merged.slice(-MAX_LIVE_EVENTS) : merged;
+          });
           const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
           eventsReadCursorRef.current = next;
           eventSequenceRef.current.confirm(next);

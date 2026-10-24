@@ -162,7 +162,9 @@ export function useSummaryDraftStream(
     const binding = bindLog(payload.logStore, payload.logRef);
     if (binding === "stale") return;
     const seq = readChunkSeq(payload.seq);
-    if (binding === "changed" || payload.truncated === true || sequenceRef.current.observe(seq)) requestCatchup();
+    if (payload.truncated === true) sequenceRef.current.requireHistory(seq);
+    const gap = sequenceRef.current.observe(seq);
+    if (binding === "changed" || payload.truncated === true || gap) requestCatchup();
     if (payload.truncated === true) return;
     const chunk = readPayloadString(payload.chunk);
     if (!chunk) return;

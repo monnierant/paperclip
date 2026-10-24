@@ -768,6 +768,40 @@ describe("useLiveRunTranscripts", () => {
     }
   });
 
+  it("fetches a consecutive truncated row excluded from an in-flight history response", async () => {
+    vi.useFakeTimers();
+    let value: ReturnType<typeof useLiveRunTranscripts>;
+    function Harness() {
+      value = useLiveRunTranscripts({ companyId: "company-1", runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }] });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk }) + "\n";
+    const first = row(1, "first");
+    const second = row(2, "complete second output");
+    try {
+      await act(async () => root.render(<Harness />));
+      let finish!: (value: Awaited<ReturnType<typeof logMock>>) => void;
+      logMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      await act(async () => negotiate());
+      await act(async () => {
+        sendEvent({ companyId: "company-1", type: "heartbeat.run.log", createdAt: "2026-10-24T00:00:00Z",
+          payload: { runId: "run-1", seq: 1, chunk: "first", stream: "stdout" } });
+        sendEvent({ companyId: "company-1", type: "heartbeat.run.log", createdAt: "2026-10-24T00:00:00Z",
+          payload: { runId: "run-1", seq: 2, chunk: "short", truncated: true, stream: "stdout" } });
+      });
+      await act(async () => finish({ runId: "run-1", store: "memory", logRef: "log-1", content: first, nextOffset: first.length }));
+      const beforeRetry = logMock.mock.calls.length;
+      logMock.mockResolvedValueOnce({ runId: "run-1", store: "memory", logRef: "log-1", content: second, nextOffset: first.length + second.length });
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(logMock.mock.calls.length).toBeGreaterThan(beforeRetry);
+      expect(value!.transcriptByRun.get("run-1")).toEqual(expect.arrayContaining([expect.objectContaining({ chunk: "complete second output", seq: 2 })]));
+      const settledReads = logMock.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(90_000));
+      expect(logMock).toHaveBeenCalledTimes(settledReads);
+    } finally { await act(async () => root.unmount()); }
+  });
+
   it("keeps HTTP polling until interest acknowledgement, then stops recurring reads", async () => {
     vi.useFakeTimers();
     function Harness({ bytes = 0 }: { bytes?: number }) {

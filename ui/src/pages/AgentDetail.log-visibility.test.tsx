@@ -8,7 +8,7 @@ import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
 
-const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async () => []), empty: [] }));
+const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
 vi.mock("@tanstack/react-query", async (original) => ({
   ...await original<typeof import("@tanstack/react-query")>(),
@@ -23,7 +23,7 @@ vi.mock("../components/transcript/RunTranscriptView", () => ({
   RunTranscriptView: ({ entries }: { entries: Array<{ chunk: string }> }) => <div>{entries.map(line => line.chunk).join(" ")}</div>,
 }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockReset(); events.mockResolvedValue([]); });
 
 it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -96,4 +96,22 @@ it.each([LogViewer, ProductionLogViewer])("uses shared streaming and retains fal
     expect(socket).not.toHaveBeenCalled();
   } finally { await act(async () => root.unmount()); }
   expect(messages.at(-1)?.runIds).toEqual([]);
+});
+
+it.each([LogViewer, ProductionLogViewer])("retains invocation details when completed history exceeds the live window (%#)", async Viewer => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  const rows = Array.from({ length: 2001 }, (_, index) => ({ id: index + 1, seq: index + 1,
+    runId: "run-1", companyId: "company-1", agentId: "agent-1", createdAt: new Date(),
+    eventType: index === 0 ? "adapter.invoke" : "output", stream: "system" as const, level: "info" as const,
+    color: null, message: null, payload: index === 0 ? { command: "invocation-retained-proof", args: [], cwd: "/workspace" } : null }));
+  events.mockImplementation(async (_runId?: string, cursor = 0) => rows.filter(row => row.seq > cursor).slice(0, 1000));
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "succeeded" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    expect(events).toHaveBeenCalledTimes(3);
+    expect(container.textContent).toContain("invocation-retained-proof");
+  } finally { await act(async () => root.unmount()); }
 });

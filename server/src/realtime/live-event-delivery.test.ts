@@ -86,6 +86,16 @@ it("recovers failed delivery reads through resync rather than silently claiming 
   expect(f.frames.at(-1)).toMatchObject({ type: "live.resync" });
   expect(f.onError).toHaveBeenCalledOnce(); f.delivery.dispose();
 });
+it("keeps older clients connected after a failed permission read and authorizes the next event", async () => {
+  const authorize = vi.fn(async (value: LiveEvent) => value);
+  authorize.mockRejectedValueOnce(new Error("permission database unavailable"));
+  const f = fixture(authorize);
+  f.delivery.enqueue(event()); f.delivery.enqueue(event(2)); await settle();
+  expect(f.frames.map(frame => frame.payload.seq)).toEqual([2]);
+  expect(f.socket.close).not.toHaveBeenCalled();
+  expect(f.onError).toHaveBeenCalledOnce();
+  f.delivery.dispose();
+});
 it("rejects unbounded interest sets and stale revision commands", () => {
   const f = fixture(); f.subscribe(["run-1"]); f.subscribe([], 1);
   expect(f.socket.close).toHaveBeenCalledWith(1008, "invalid run interests");

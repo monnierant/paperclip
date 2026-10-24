@@ -104,7 +104,9 @@ export function createLiveEventDelivery(input: {
           input.onError(error);
           // A failed authorization/read creates a delivery gap. Never advertise
           // healthy streaming while silently discarding an authorized transcript.
-          overflow();
+          // Older clients still poll their canonical history. Keep their
+          // existing skip-and-continue behavior on a failed permission read.
+          if (negotiated) overflow();
         } finally { retainedBytes -= item.bytes; retainedItems -= 1; }
       }
     } finally { draining = false; resync(); }

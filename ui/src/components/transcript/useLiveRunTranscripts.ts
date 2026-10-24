@@ -356,6 +356,7 @@ export function useLiveRunTranscripts({
           const binding = bindLog(runId, payload.logStore, payload.logRef);
           if (binding === "stale") return;
           const seq = readChunkSeq(payload.seq);
+          if (payload.truncated === true) sequence(runId).requireHistory(seq);
           const gap = sequence(runId).observe(seq);
           if (binding === "changed" || payload.truncated === true || gap) requestCatchUp(runId);
           if (payload.truncated === true) return;
