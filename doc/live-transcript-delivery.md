@@ -48,6 +48,9 @@ Live catch-up refreshes only the affected run. Each run has at most one history
 read in flight and one retry timer. Terminal notifications during a read coalesce
 into one subsequent read. A busy run cannot cancel a sibling's paginated history.
 This applies to both native commit signals and truncated legacy log chunks.
+Agent Detail also refreshes its event history and shell log independently. A
+signal for one cannot abort the other's page or advance its persisted cursor;
+terminal notifications queue a follow-up for each active reader.
 
 Catch-up runs on subscription, reconnect, show, explicit resynchronization, gaps,
 and terminal status. Live catch-up drains pending pages. Failed reads retry even

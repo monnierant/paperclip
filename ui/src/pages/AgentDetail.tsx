@@ -4101,19 +4101,14 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     }
   }
 
-  const [catchupGeneration, setCatchupGeneration] = useState(0);
-  const gapPendingRef = useRef(false);
+  const refreshEventsRef = useRef<((force?: boolean) => void) | null>(null);
+  const refreshLogRef = useRef<((force?: boolean) => void) | null>(null);
   const eventSequenceRef = useRef(new TranscriptSequence());
   const logSequenceRef = useRef(new TranscriptSequence());
   const eventsReadCursorRef = useRef(0);
   const logIdentityRef = useRef<string | null>(run.logRef ?? null);
   const retiredLogRefs = useRef(new Set<string>());
   const wasLiveRef = useRef(isLive);
-  const requestCatchup = () => {
-    if (gapPendingRef.current) return;
-    gapPendingRef.current = true;
-    setCatchupGeneration(value => value + 1);
-  };
   const bindLog = (ref: unknown): "same" | "changed" | "stale" => {
     if (typeof ref !== "string" || !ref || ref === logIdentityRef.current) return "same";
     if (retiredLogRefs.current.has(ref)) return "stale";
@@ -4130,7 +4125,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   };
   useEffect(() => {
     eventsReadCursorRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
-    gapPendingRef.current = false; wasLiveRef.current = isLive;
+    wasLiveRef.current = isLive;
     logIdentityRef.current = run.logRef ?? null; retiredLogRefs.current.clear();
     setEvents([]); setLoading(true);
   }, [run.id, run.companyId]);
@@ -4146,7 +4141,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       const seq = readChunkSeq(payload.seq);
       if (payload.truncated === true) logSequenceRef.current.requireHistory(seq);
       const gap = logSequenceRef.current.observe(seq);
-      if (binding === "changed" || payload.truncated === true || gap) requestCatchup();
+      if (binding === "changed" || payload.truncated === true || gap) refreshLogRef.current?.();
       if (payload.truncated === true) return;
       const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
       if (!chunk) return;
@@ -4162,12 +4157,14 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       seenProgressLogLineKeysRef.current.add(key); appendLogLines([line]);
       return;
     }
-    if (event.type === "heartbeat.run.status") { requestCatchup(); return; }
+    if (event.type === "heartbeat.run.status") {
+      refreshEventsRef.current?.(true); refreshLogRef.current?.(true); return;
+    }
     const row = liveRunEvent(event);
     if (!row) return;
     const commitSignal = row.message === null && row.payload === null;
     if (commitSignal) eventSequenceRef.current.requireHistory(row.seq);
-    if (eventSequenceRef.current.observe(row.seq)) requestCatchup();
+    if (eventSequenceRef.current.observe(row.seq)) refreshEventsRef.current?.();
     if (commitSignal) return;
     setEvents(previous => mergeRunEvents(previous, [row]).slice(-MAX_LIVE_EVENTS));
   });
@@ -4179,7 +4176,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     let cancelled = false;
     let timer: number | undefined;
     const abort = new AbortController();
+    let reading = false;
+    let pendingRefresh = false;
     const read = async () => {
+      if (cancelled || reading) return;
+      reading = true; pendingRefresh = false;
+      window.clearTimeout(timer); timer = undefined;
       let failed = false;
       try {
         let cursor = eventsReadCursorRef.current;
@@ -4197,15 +4199,19 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           cursor = next;
         }
         failed = eventSequenceRef.current.needsCatchup;
-        if (!failed) gapPendingRef.current = false;
       } catch { failed = true; }
       if (cancelled) return;
+      reading = false;
       setLoading(false);
-      if (failed || (isLive && !stream.healthy)) timer = window.setTimeout(() => void read(), 2000);
+      if (pendingRefresh) void read();
+      else if (failed || (isLive && !stream.healthy)) timer = window.setTimeout(() => void read(), 2000);
     };
+    // Event history and shell-log history have separate cursors and lifetimes.
+    // Live signals must not cancel either reader's useful in-flight page.
+    refreshEventsRef.current = (force = false) => { if (force) pendingRefresh = true; void read(); };
     void read();
-    return () => { cancelled = true; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [visible, run.id, run.companyId, run.status, stream.healthy, stream.epoch, catchupGeneration]);
+    return () => { cancelled = true; refreshEventsRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [visible, run.id, run.companyId, run.status, stream.healthy, stream.epoch]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
     if (scrollContainerRef.current) return scrollContainerRef.current;
@@ -4308,7 +4314,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     let timer: number | undefined;
     const abort = new AbortController();
     setLogLoading(true);
+    let reading = false;
+    let pendingRefresh = false;
     const load = async () => {
+      if (cancelled || reading) return;
+      reading = true; pendingRefresh = false;
+      window.clearTimeout(timer); timer = undefined;
       let failed = false;
       try {
         for (;;) {
@@ -4325,19 +4336,21 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           if (!wasLiveRef.current || result.nextOffset === undefined || !result.content || next <= offset) break;
         }
         failed ||= logSequenceRef.current.needsCatchup;
-        if (!failed) gapPendingRef.current = false;
       } catch (err) {
         if (cancelled) return;
         failed = shouldPollShellLog || !isRunLogUnavailable(err);
         if (!isRunLogUnavailable(err)) setLogError(err instanceof Error ? err.message : "Failed to load run log");
       }
       if (cancelled) return;
+      reading = false;
       setLogLoading(false);
-      if (failed || (shouldPollShellLog && !stream.healthy)) timer = window.setTimeout(() => void load(), 2000);
+      if (pendingRefresh) void load();
+      else if (failed || (shouldPollShellLog && !stream.healthy)) timer = window.setTimeout(() => void load(), 2000);
     };
+    refreshLogRef.current = (force = false) => { if (force) pendingRefresh = true; void load(); };
     void load();
-    return () => { cancelled = true; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [visible, run.id, run.companyId, run.logRef, isLive ? null : run.logBytes, shouldPollShellLog, stream.healthy, stream.epoch, catchupGeneration]);
+    return () => { cancelled = true; refreshLogRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [visible, run.id, run.companyId, run.logRef, isLive ? null : run.logBytes, shouldPollShellLog, stream.healthy, stream.epoch]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;

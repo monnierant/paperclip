@@ -165,3 +165,66 @@ it.each([LogViewer, ProductionLogViewer])("preserves saved event details and cat
     expect(container.textContent).toContain("new canonical event details");
   } finally { await act(async () => root.unmount()); }
 });
+
+it.each([
+  { Viewer: LogViewer, stalled: "log" }, { Viewer: ProductionLogViewer, stalled: "log" },
+  { Viewer: LogViewer, stalled: "events" }, { Viewer: ProductionLogViewer, stalled: "events" },
+])("finishes a slow $stalled page while the other reader catches up (%#)", async ({ Viewer, stalled }) => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({ content: "" });
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const row = (seq: number): HeartbeatRunEvent => ({ id: seq, seq, runId: run.id,
+    companyId: run.companyId, agentId: run.agentId, eventType: "item.completed", message: `event ${seq}`,
+    stream: null, level: null, color: null, payload: {}, createdAt: new Date() });
+  const logRow = (seq: number) => JSON.stringify({ seq, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk: `shell ${seq}` }) + "\n";
+  const transcripts = new LiveTranscriptInterests();
+  const listeners = new Set<CompanyLiveEventHandler>();
+  const messages: Array<{ revision?: number }> = [];
+  const subscription = { companyId: run.companyId, transcripts,
+    subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
+  const emit = (type: LiveEvent["type"], seq: number) => {
+    for (const listener of listeners) listener({ id: seq, companyId: run.companyId, type,
+      createdAt: new Date().toISOString(), payload: { runId: run.id, agentId: run.agentId, seq, eventType: "item.completed", truncated: true, status: "succeeded" } });
+  };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  let finishLog!: (value: { content: string }) => void;
+  let finishEvents!: (value: HeartbeatRunEvent[]) => void;
+  const held = stalled === "log" ? log : events;
+  try {
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => {
+      transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+      transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    if (stalled === "log") log.mockImplementationOnce(() => new Promise(resolve => { finishLog = resolve; }));
+    else events.mockImplementationOnce(() => new Promise(resolve => { finishEvents = resolve; }));
+    await act(async () => emit(stalled === "log" ? "heartbeat.run.log" : "heartbeat.run.event", 1));
+    const calls = held.mock.calls as unknown as Array<[string, number, number, { signal: AbortSignal }]>;
+    const heldCount = calls.length;
+    const signal = calls.at(-1)![3].signal;
+    for (let seq = 1; seq <= 3; seq++) {
+      if (stalled === "log") events.mockResolvedValueOnce([row(seq)]);
+      else log.mockResolvedValueOnce({ content: logRow(seq) });
+      await act(async () => emit(stalled === "log" ? "heartbeat.run.event" : "heartbeat.run.log", seq));
+    }
+    expect(held).toHaveBeenCalledTimes(heldCount);
+    expect(signal.aborted).toBe(false);
+    expect(container.textContent).toContain(stalled === "log" ? "event 3" : "shell 3");
+    await act(async () => { emit("heartbeat.run.status", 4); emit("heartbeat.run.status", 5); });
+    expect(held).toHaveBeenCalledTimes(heldCount);
+    expect(signal.aborted).toBe(false);
+    await act(async () => {
+      if (stalled === "log") finishLog({ content: logRow(1) });
+      else finishEvents([row(1)]);
+    });
+    expect(held).toHaveBeenCalledTimes(heldCount + 1);
+    expect(container.textContent).toContain(stalled === "log" ? "shell 1" : "event 1");
+    const settled = [events.mock.calls.length, log.mock.calls.length];
+    await act(async () => vi.advanceTimersByTimeAsync(90_000));
+    expect([events.mock.calls.length, log.mock.calls.length]).toEqual(settled);
+  } finally { await act(async () => root.unmount()); }
+});
