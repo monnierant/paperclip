@@ -109,7 +109,11 @@ export function observeRemoteRestartBoundary(run: StoryRun, rows: readonly Row[]
   const metadata = record(lease.metadata), task = record(metadata.runnerTaskIdentity);
   const plugin = lease.provider === "plugin" || String(lease.provider).startsWith("plugin:");
   if (plugin) {
-    if (run.processPid != null || run.processStartedAt != null || metadata.runnerTaskDispatched !== true
+    // The normal task authority clears dispatch only after provider status confirms
+    // execution stopped. Completion during the outage must retain that proof.
+    const settled = recovered && run.status === "succeeded"
+      && metadata.runnerTaskDispatched === false && metadata.runnerTaskExecutionStopped === true;
+    if (run.processPid != null || run.processStartedAt != null || (!settled && metadata.runnerTaskDispatched !== true)
       || task.runnerId !== run.runnerInstanceId || task.runId !== run.id || task.sessionId !== run.nativeSessionId
       || !id(task.leaseId) || !id(task.turnId) || !id(task.itemId)) {
       throw new Error("Remote restart requires the admitted plugin task identity, not the controller PID");

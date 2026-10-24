@@ -83,11 +83,25 @@ describe("remote restart lifecycle evidence", () => {
     const lease = { ...f.leases[0]!, provider: "plugin", metadata: { runnerTaskDispatched: true, runnerTaskIdentity: task } };
     const run = { ...f.active, processPid: null, processStartedAt: null };
     const before = observeRemoteRestartBoundary(run, f.rows, [lease], f.scope);
-    const after = observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [{ ...lease, status: "released" }], f.scope, true);
+    const completedLease = { ...lease, status: "released", metadata: {
+      ...lease.metadata, runnerTaskDispatched: false, runnerTaskExecutionStopped: true,
+    } };
+    const after = observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [completedLease], f.scope, true);
     expect(before.identity).toEqual(after.identity);
     expect(before.identity.processPid).toBeNull();
     expect(before.identity.taskIdentitySha256).toMatch(/^[a-f0-9]{64}$/);
     expect(() => observeRemoteRestartBoundary({ ...run, processPid: 123 }, f.rows, [lease], f.scope)).toThrow("not the controller PID");
+    for (const runnerTaskExecutionStopped of [undefined, false]) {
+      const unconfirmed = { ...completedLease, metadata: { ...completedLease.metadata, runnerTaskExecutionStopped } };
+      expect(() => observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [unconfirmed], f.scope, true))
+        .toThrow("admitted plugin task identity");
+    }
+    const stoppedActiveLease = { ...lease, metadata: completedLease.metadata };
+    expect(() => observeRemoteRestartBoundary(run, f.rows, [stoppedActiveLease], f.scope, true))
+      .toThrow("admitted plugin task identity");
+    const foreignTask = { ...completedLease, metadata: { ...completedLease.metadata, runnerTaskIdentity: { ...task, runId: "replacement" } } };
+    expect(() => observeRemoteRestartBoundary({ ...run, status: "succeeded" }, f.finalRows, [foreignTask], f.scope, true))
+      .toThrow("admitted plugin task identity");
   });
   it("does not confuse unchanged metadata or HTTP readiness with authenticated recovery", () => {
     const { evidence } = fixture();
