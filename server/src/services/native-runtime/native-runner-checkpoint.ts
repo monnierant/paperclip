@@ -26,13 +26,18 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: Owner) {
       .map(async ([part, value]) => ({ companyId: owner.companyId, issueId: owner.issueId,
         runId: owner.runId, part, material: await encryptPart(owner, part, value) })));
     await db.transaction(async tx => {
-      const [owned] = await tx.select({ current: nativeRunFinalizations, now: sql<Date>`clock_timestamp()` }).from(nativeRunFinalizations)
+      // A locking CTE acquires ownership before the outer projection samples
+      // wall time. Sampling in the locking SELECT can precede its lock wait.
+      // Keep both steps in one statement without another database round trip.
+      const locked = tx.$with("checkpoint_owner").as(tx.select().from(nativeRunFinalizations)
         .where(and(eq(nativeRunFinalizations.companyId, owner.companyId),
           eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.runId, owner.authorityRunId),
           eq(nativeRunFinalizations.controllerBootId, owner.bootId),
-          eq(nativeRunFinalizations.controllerGeneration, owner.generation))).for("update");
+          eq(nativeRunFinalizations.controllerGeneration, owner.generation))).for("update"));
+      const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
+        leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, now: sql<Date>`clock_timestamp()` }).from(locked);
       if (!owned) throw new Error("native_runner_checkpoint_owner_lost");
-      const { current } = owned;
+      const current = owned;
       const activeOwner = current.leaseOwner === owner.leaseOwner
         && current.leaseExpiresAt !== null && current.leaseExpiresAt > new Date(owned.now);
       if (!activeOwner) {

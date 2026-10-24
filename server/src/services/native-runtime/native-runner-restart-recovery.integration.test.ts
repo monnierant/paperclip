@@ -824,6 +824,52 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     await authority.stop();
   });
 
+  it("fences checkpoint delivery when ownership expires during an unchanged row-lock wait", async () => {
+    const fixture = await seedRun("CHECKPOINT-LOCK-EXPIRY");
+    const root = resolve(runtimeRoot, fixture.runId);
+    const options = transportOptions(fixture, root);
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    const writerDb = createDb(temporary.connectionString, { maxConnections: 1 });
+    const [backend] = await writerDb.execute(sql`select pg_backend_pid() as pid`);
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(root, "control-plane"),
+      identity: options.prpIdentity, expectedRunnerVersion: "lock-test", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    let unlock: (() => void) | undefined;
+    let holder: Promise<void> | undefined;
+    try {
+      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+        controllerGeneration: 1, leaseOwner: "locked-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      await registerNativeRunnerCheckpoint({ db: writerDb, binding, bootId: successor.bootId, authority });
+      const saved = await loadNativeRunnerCheckpoint(fixture.db, binding);
+      await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: sql`clock_timestamp() + interval '2 seconds'` })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      let acquired!: () => void;
+      const locked = new Promise<void>(resolve => { acquired = resolve; });
+      const released = new Promise<void>(resolve => { unlock = resolve; });
+      holder = fixture.db.transaction(async tx => {
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)).for("update");
+        acquired(); await released; // Do not update the tuple while holding it.
+      });
+      await locked;
+      authority.queueCommand("turn.start", {}, "expired-owner-work");
+      const flushed = authority.flushCheckpoint().then(() => null, error => error);
+      await vi.waitFor(async () => {
+        const [activity] = await fixture.db.execute(sql`select wait_event_type from pg_stat_activity where pid = ${backend.pid}`);
+        expect(activity.wait_event_type).toBe("Lock");
+      }, { timeout: 1_000 });
+      const [before] = await fixture.db.execute(sql`select lease_expires_at > clock_timestamp() as active
+        from native_run_finalizations where run_id = ${fixture.runId}`);
+      expect(before.active).toBe(true);
+      await fixture.db.execute(sql`select pg_sleep(2.1)`);
+      unlock!(); await holder;
+      expect(await flushed).toMatchObject({ message: "native_runner_checkpoint_owner_lost" });
+      expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(saved?.records);
+    } finally {
+      unlock?.(); await holder;
+      await authority.stop(); await writerDb.$client.end();
+    }
+  });
+
   it("renews remote ownership while the application pool is saturated and bounds row-lock waits", async () => {
     const fixture = await seedRun("RENEWAL-LIVENESS-POOL");
     const owner = createDb(temporary.connectionString, { maxConnections: 1 });
@@ -1263,8 +1309,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!checkpoint) throw new Error("Missing durable authority");
       const duplicateLauncher = vi.fn(() => { throw new Error("duplicate runner spawn attempted"); });
       prepareLaunch.mockClear();
+      const authorizeRunnerAdoption = vi.fn(async () => {});
       adopted = createRunnerdCodexTransport({ ...options,
-        ...(preparedTask ? { prepareLaunch } : {}),
+        ...(preparedTask ? { prepareLaunch, authorizeRunnerAdoption } : {}),
         runnerBinary: resolve(controllerRoot, "new-release-does-not-contain-old-runner"),
         runnerArtifact: { version: checkpoint.runnerVersion, digest: checkpoint.runnerDigest },
         resumeDynamicTools: [], runnerProcessLauncher: duplicateLauncher,
@@ -1281,6 +1328,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       expect(await readProcessStartedAt(runnerPid)).toBe(startedAt);
       expect(duplicateLauncher).not.toHaveBeenCalled();
       expect(prepareLaunch).not.toHaveBeenCalled();
+      if (preparedTask) expect(authorizeRunnerAdoption).toHaveBeenCalledExactlyOnceWith("provider-owned-configuration", options.prpIdentity);
       const calls = await readFile(resolve(sandboxRoot, "calls.log"), "utf8");
       expect(calls.match(/^turn\/start$/gm)).toHaveLength(1);
       expect(calls.match(/^turn\/steer$/gm)).toHaveLength(1);

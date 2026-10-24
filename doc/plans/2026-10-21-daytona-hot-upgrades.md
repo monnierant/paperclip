@@ -543,3 +543,15 @@ Successful authorization does not prepare, submit or stop the surviving process.
 The same check is reused by the legacy preparation recovery path. This adds one
 project authorization call per adoption and bounded control metadata; it does not
 introduce periodic checks or text-triggered checkpoint writes.
+
+### Checkpoint expiry after a row-lock wait (2026-10-24)
+
+The checkpoint writer acquires the coordinator row in a locking CTE, then samples
+`clock_timestamp()` in the outer query. Sampling in the locking query itself could
+use a time from before an unchanged row-lock wait and accept an expired owner.
+The regression observes the writer blocked in Postgres while its lease is still
+valid, holds the unchanged row past expiry, and verifies the durable barrier fails
+without changing the saved checkpoint. It fails on the prior writer and passes
+with the fix. Both phases remain one SQL statement and database round trip.
+The repeated 8/512-chunk cost gate still measures eight checkpoint writes, seven
+transactions and fourteen changed rows, with zero streaming or idle SQL.
