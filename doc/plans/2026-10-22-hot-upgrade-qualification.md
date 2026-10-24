@@ -51,79 +51,70 @@ exist; HTTP readiness or a replacement task is insufficient evidence of continui
 
 ## Current execution evidence (2026-10-24)
 
-Latest qualification changes and limits:
+The review stack is [Runner #17097](https://github.com/paperclipai/paperclip/pull/17097)
+→ [Server #17439](https://github.com/paperclipai/paperclip/pull/17439)
+→ [Qualification #17455](https://github.com/paperclipai/paperclip/pull/17455)
+→ [Transcript delivery #17456](https://github.com/paperclipai/paperclip/pull/17456).
+None is deployed. The remaining acceptance gates below are not waived.
 
-- The recovery integration file now passes 37 tests against a disposable Docker
-  Postgres database. Five optional container-profile cases remain skipped.
-  This includes prepared-launch adoption and warm callback ownership. The
-  previous macOS semaphore setup failure was diagnosed before switching test
-  infrastructure; it was not a recovery failure or a passing attempt.
-- The supervisor records HTTP readiness, natural ownership acquisition,
-  authenticated attachment, resumed canonical ingestion, and final backlog
-  settlement separately. Its observer reads the existing coordinator and the
-  Runner-owned checkpoint evidence projection. Authentication requires the
-  durable connection count to increase; replaying saved events alone cannot
-  pass. Times are observation upper bounds. The observer never renews or edits
-  leases and never invokes recovery. Its qualification-only SQL is excluded
-  from product SQL cost measurements.
-- The remote workflow accepts admitted plugin task identities without treating
-  the web-server PID as a remote runner PID. It permits the original turn to
-  finish during the outage. An A/B/A manifest requires two independently graded
-  replacements; one passing restart cannot stand in for rollback.
-- The credential-free migration smoke creates an empty disposable database on
-  an explicitly supplied Postgres server. A applies its own migrations before
-  B starts. The embedded test helper pre-migrates databases, so it is rejected
-  for artifact migration proof. A/B revisions with identical migration journals
-  establish compatible startup/rollback only, not a nontrivial forward migration.
-- Development artifact preparation exposed packaging gaps in plain `pnpm deploy`:
-  its CLI self-reference pointed outside the installation, public entrypoints and
-  CLI dependencies were not materialized, and bundled server dependencies and
-  runtime skills were incomplete. These failed startup attempts ran zero agents.
-  The fixture uses the existing release manifest generators and bundled-package
-  preparer, stages release skills, and contains all dependency links before
-  freezing a new complete-tree hash. No failed tree is qualified.
+| Layer | Latest evidence | Limit / next gate |
+| --- | --- | --- |
+| Runner | `4d1335df5701962485e0503bedbdc1af14b3c7c7`: CI green, Greptile 5/5. Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. Authenticated-connection projection regression passed after its addition. | Three dependency-checker violations existed unchanged on the selected master baseline; they are not a passing boundary check. Synthetic execution does not qualify Codex/Claude. |
+| Server | `e860e0ec0721f1c11678df4e079e57b3b10cb9ca`: 40 real-Postgres/recovery/lease tests passed, five optional profiles skipped; three plugin adoption tests passed; server typecheck passed; Greptile 5/5. | CI's unchanged stylesheet-preload browser tests still fail. Hosted admission/continuity remains outstanding. |
+| Qualification | 49 focused tests passed, including the real-Postgres observer query; qualification typecheck passed. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | The new embedded database ownership test fails during host Postgres initialization; this is not passing lifecycle proof. Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. |
+| Transcript delivery | Review regressions cover a truncated consecutive event during history fetch and completed histories over 2,000 events. Legacy two-view browser journey passed. | Native browser journey, final candidate CI/review and remaining viewer/access journeys are in progress. |
 
-The 300-second active-agent upgrade, hosted continuity, representative concurrent
-admission, stale-owner partition, browser journeys, and released-version matrix
-remain acceptance gates. Do not infer them from the unit or zero-agent smoke
-results below.
+The supervisor observes HTTP readiness, natural ownership acquisition,
+authenticated attachment, resumed canonical ingestion, and backlog settlement
+separately. The read-only observer uses one repeatable-read database snapshot and
+the Runner-owned checkpoint evidence projection. A new durable authentication
+count and new canonical source sequence are both required; replaying saved events
+cannot pass. The observer never renews or edits a lease or invokes recovery.
+Its SQL is qualification overhead, excluded from product SQL cost measurements.
+Postgres belongs to the supervisor rather than the killed serving process;
+external Postgres is left alone, while an owned embedded database starts empty.
+Each serving artifact applies its own migrations.
 
-- Runner PR [#17097](https://github.com/paperclipai/paperclip/pull/17097)
-  contains the optional contract and one-process fixture. Server PR
-  [#17439](https://github.com/paperclipai/paperclip/pull/17439) contains its
-  Postgres consumer. Both remain drafts until their outstanding gates pass.
-- The fixture passed all three scenarios (external persistence, filesystem-only
-  consumer, and reconnect deadline); 191 controller/profile tests, 96 Rust
-  durability tests and 11 replay-parity tests passed on the initial split.
-- Real Postgres cost comparison: 8 and 512 text chunks each produced 8 checkpoint
-  writes, 7 transactions and 14 changed rows for identical control operations.
-  Both measured zero streaming checkpoint SQL/transactions/rows and zero idle
-  SQL. WAL was 37,408 and 37,528 bytes, respectively; this diagnostic is not a
-  production capacity estimate. Private receipt:
-  `/tmp/paperclip-hot-upgrade-pr2-sql-cost-20261024-2.json`.
-- Independent mutation tests passed for both a lost HTTP response after the
-  project row committed and a lost runner response after the API receipt was
-  saved. Each checked the business table independently and counted one dispatch.
-- The real-process recovery suite passed 35 cases and exposed one prepared-task
-  adoption failure: recovery lacked the original working directory. The runner
-  repair reads the checkpoint's original launch descriptor without re-preparing
-  resources; its focused process regression passed. The broader post-fix rerun
-  remains pending: macOS exhausted system-wide Postgres semaphores during setup.
-  No production reliability claim is based on the failed setup.
-- The initial runner slice passed workspace typecheck. The broad local test run
-  was interrupted after concurrent database campaigns exhausted host resources;
-  it is not a passing full-suite result. Three dependency-boundary violations
-  existed unchanged on the selected master baseline and remain to be resolved
-  or reported explicitly. CI and review completion are still pending.
-- Installed-artifact qualification now supports a manifest selected by
-  `PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS`, with distinct A/B complete installation
-  tree hashes, entrypoint pins, baked-in build revisions and an A/B/A sequence.
-  The existing supervisor verifies each installed tree before launch and checks
-  `/api/health`'s actual serving commit. It never supplies a build SHA to the
-  server environment. The credential-free replacement smoke runs the sequence
-  against one surviving Postgres instance, but explicitly qualifies **zero agent
-  turns**. Active continuity, natural ownership/attachment phase receipts, full
-  300-second A/B and rollback runs, and hosted evidence remain outstanding.
+The credential-free startup smoke used these **development builds**, both 0.3.1:
+
+| Artifact | Serving revision | Complete installation SHA-256 |
+| --- | --- | --- |
+| A | `f695ca7faac27d055441bb60bf377831bda85622` | `af894bdc71e390f11cfdd9128c828007e94095c0ba7bdab34c0ba1a7ecd01284` |
+| B | `5ff132042f1071fdbc45624f6ab1e4d1bfac6598` | `bc3dd69e2c704a6c7c98804a1653d3b8a4e8fd8b88676c043dad891c0e506d15` |
+
+The short smoke held the server down for 1,000 ms per replacement. Readiness
+arrived after 25,305.985 and 33,658.933 ms. The full smoke held it down for 300,000 ms
+per replacement; readiness arrived after 327,622.436 and 327,668.142 ms, within
+420 seconds. Both preserved the database, read existing data, accepted a fresh
+company mutation after each replacement, and cleaned up successfully. Receipts
+explicitly record `providerTurns: 0` and `activeAgentContinuityQualified: false`.
+A/B have identical migration journals: this establishes compatible startup and
+rollback, not a nontrivial forward migration. These builds predate the final
+server claim-renewal fix, so they cannot qualify that candidate's active recovery.
+
+Private receipt locations: `paperclip-runner-e2e-k6aRaI/replacement-evidence.json`
+(short) and `paperclip-runner-e2e-EXG9cW/replacement-evidence.json` (300 seconds)
+under the host temporary directory. Harness revisions were respectively
+`faaf31890e5ae96227bcfc0270bd5d94a92a2641` and
+`446d89245bad472abe6b5a793365004858df1e63`.
+
+Real Postgres cost comparison: 8 and 512 text chunks each produced 8 checkpoint
+writes, 7 transactions and 14 changed rows for the same control operations.
+Both measured zero streaming checkpoint SQL/transactions/rows and zero idle SQL.
+WAL was 37,408 and 37,528 bytes; this diagnostic is not a production capacity
+estimate. Receipt: `/tmp/paperclip-hot-upgrade-pr2-sql-cost-20261024-2.json`.
+Independent mutation tests covered a lost HTTP response after the business row
+committed and a lost runner response after its API receipt was saved. Both
+checked the business table independently and counted one dispatch.
+
+Failed attempts remain distinct from evidence: plain `pnpm deploy` omitted
+public manifests, bundled dependencies and runtime skills; the existing release
+preparers fixed the artifact before it was frozen. An initial 300-second smoke
+could not connect to stopped Docker and launched no agents. Native macOS Postgres
+setup repeatedly exhausted host semaphores; integration checks moved to a
+throwaway Docker database without changing product recovery. The earlier hosted
+attempt exhausted BuildKit disk during image export, before launching a sandbox.
+No expensive retry should proceed without resolving its infrastructure cause.
 
 ## Evidence layers
 

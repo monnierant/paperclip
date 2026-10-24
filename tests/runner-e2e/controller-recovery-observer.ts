@@ -2,7 +2,10 @@
  * parses checkpoint records, or interprets an underlying harness protocol. */
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { createDb } from "../../packages/db/src/index.js";
+import { createRequire } from "node:module";
+const { sql }: typeof import("../../packages/db/node_modules/drizzle-orm/index.js") =
+  createRequire(new URL("../../packages/db/package.json", import.meta.url))("drizzle-orm");
+import { createDb, type Db } from "../../packages/db/src/index.js";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
 import { loadNativeRunnerCheckpoint } from "../../server/src/services/native-runtime/native-runner-checkpoint.js";
 import type { ControllerOutageReceipt } from "./controller-outage.js";
@@ -83,6 +86,28 @@ export function validControllerRecoveryReceipt(fault: ControllerOutageReceipt | 
       .every(ms => Number.isFinite(ms) && ms >= fault!.readyAfterMs! && ms < 420_000));
 }
 
+export async function readControllerRecoverySnapshot(db: Db, binding: RecoveryBinding): Promise<RecoverySnapshot> {
+  return db.transaction(async tx => {
+    const [row] = await tx.execute(sql`select r.id as "runId", r.runner_instance_id as "runnerInstanceId",
+      r.native_session_id as "nativeSessionId", f.controller_boot_id as "bootId", f.controller_generation as generation,
+      f.attempt, f.lease_expires_at::text as "leaseExpiresAt", f.recovery_history as history,
+      coalesce((select max(e.source_seq) from heartbeat_run_events e where e.run_id = r.id
+        and e.company_id = r.company_id and e.source_instance_id = r.runner_instance_id::text), 0)::float8 as "sourceSeq"
+      from heartbeat_runs r join native_run_finalizations f on f.run_id = r.id and f.company_id = r.company_id
+      where r.id = ${binding.runId} and r.company_id = ${binding.companyId} and r.native_issue_id = ${binding.issueId}`);
+    if (!row?.runnerInstanceId || !row.nativeSessionId || !row.bootId) throw new Error("Recovery binding has no admitted native owner");
+    // Use the existing server loader and Runner's public diagnostic projection.
+    // The qualification code never reads encrypted material or private formats.
+    const checkpoint = await loadNativeRunnerCheckpoint(tx as unknown as Db, binding);
+    const evidence = checkpoint?.recoveryEvidence;
+    if (!evidence || evidence.runnerInstanceId !== row.runnerInstanceId || evidence.normalizedSessionId !== row.nativeSessionId) {
+      throw new Error("Recovery checkpoint has no matching runner evidence");
+    }
+    return { ...row, authenticatedConnectionCount: evidence.authenticatedConnectionCount,
+      checkpointSourceSeq: evidence.highestRecordedSourceSeq } as RecoverySnapshot;
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+}
+
 export async function createControllerRecoveryObserver(configPath: string, binding: RecoveryBinding) {
   const config = paperclipConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
   const url = config.database.mode === "postgres" ? config.database.connectionString
@@ -90,25 +115,7 @@ export async function createControllerRecoveryObserver(configPath: string, bindi
   if (!url) throw new Error("Qualification database is unavailable");
   const db = createDb(url);
   let before: RecoverySnapshot | undefined;
-  async function read(): Promise<RecoverySnapshot> {
-    const [row] = await db.$client`select r.id as "runId", r.runner_instance_id as "runnerInstanceId",
-      r.native_session_id as "nativeSessionId", f.controller_boot_id as "bootId", f.controller_generation as generation,
-      f.attempt, f.lease_expires_at::text as "leaseExpiresAt", f.recovery_history as history,
-      coalesce((select max(e.source_seq) from heartbeat_run_events e where e.run_id = r.id
-        and e.company_id = r.company_id and e.source_instance_id = r.runner_instance_id), 0)::float8 as "sourceSeq"
-      from heartbeat_runs r join native_run_finalizations f on f.run_id = r.id and f.company_id = r.company_id
-      where r.id = ${binding.runId} and r.company_id = ${binding.companyId} and r.native_issue_id = ${binding.issueId}`;
-    if (!row?.runnerInstanceId || !row.nativeSessionId || !row.bootId) throw new Error("Recovery binding has no admitted native owner");
-    // Use the existing server loader and Runner's public diagnostic projection.
-    // The qualification code never reads encrypted material or private formats.
-    const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
-    const evidence = checkpoint?.recoveryEvidence;
-    if (!evidence || evidence.runnerInstanceId !== row.runnerInstanceId || evidence.normalizedSessionId !== row.nativeSessionId) {
-      throw new Error("Recovery checkpoint has no matching runner evidence");
-    }
-    return { ...row, authenticatedConnectionCount: evidence.authenticatedConnectionCount,
-      checkpointSourceSeq: evidence.highestRecordedSourceSeq } as RecoverySnapshot;
-  }
+  const read = () => readControllerRecoverySnapshot(db, binding);
   return {
     // Called only after the old server is confirmed dead. This also excludes
     // receipts committed while it was stopping from replacement evidence.

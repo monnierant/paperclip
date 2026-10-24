@@ -1,3 +1,4 @@
+import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
 import { createControllerRecoveryObserver, parseRecoveryBinding, type RecoveryBinding } from "./controller-recovery-observer.js";
 import { parseFinalizationCrashBinding, readFinalizationCrashBoundary, type FinalizationCrashBinding } from "./finalization-crash-boundary.js";
@@ -128,6 +129,7 @@ let unexpectedChildFailure: Error | null = null;
 let shutdownSignal: NodeJS.Signals | null = null;
 let activeRestartRequestId: string | null = null;
 let feedbackRecovery: Promise<void> | undefined;
+let controllerDatabase: Awaited<ReturnType<typeof prepareControllerDatabase>> | undefined;
 
 function recoverFeedbackBeforeShutdown() {
   return feedbackRecovery ??= (async () => {
@@ -496,6 +498,11 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
+  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+    // The wrapper owns this sibling process. Killing the serving child must
+    // leave Postgres available to the stopped-controller observer and successor.
+    controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
   const initial = await startServer();
   if (upgradeArtifacts) await waitForHealth(initial);
   let lastRestartRequestId: string | null = null;
@@ -537,5 +544,10 @@ try {
   }
 }
 
+try { await controllerDatabase?.cleanup(); }
+catch (error) {
+  exitCode = 1;
+  appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+}
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;
