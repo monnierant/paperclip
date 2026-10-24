@@ -92,6 +92,26 @@ was 37,424/37,720 bytes (diagnostic only). Runner identity checks and server
 typecheck pass. The first CTE implementation failed typecheck on a nested subquery
 projection; selecting its three needed fields explicitly fixed it before testing.
 
+The next server review found that instruction update/restore receipts use call
+IDs rather than generic idempotency keys. Recovery now reuses their existing
+locked receipt and current target-authorization checks in a mode that cannot
+reserve or repeat a write. Both lost-commit-acknowledgement regressions fail on
+the prior code. All 13 real-Postgres/filesystem instruction tests and 29 existing
+tool-authority tests pass, including unchanged bytes and one audit effect,
+conflicting arguments, revoked permissions, Stop, unknown outcomes and a receipt
+removed before locked replay. An initial companion-suite attempt exhausted macOS
+Postgres semaphores before tests; both suites then used the same disposable-host
+helper with independent databases. Server typecheck passes.
+
+Transcript review also found legacy catch-up restarting sibling reads and an
+interest acknowledgement clearing a stalled delivery deadline. Two legacy
+regressions and the blocked-delivery deadline regression fail on the prior code.
+The corrected hooks pass 31 focused tests; all 12 delivery tests, UI typecheck
+and token gates pass. Terminal refreshes coalesce per run, and resubscription
+cannot extend the original five-second backlog deadline. Existing protocol,
+checkpoint and canonical-log ownership is unchanged. Updated CI, review and
+browser evidence remain attributed to their candidate revisions on the PRs.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
