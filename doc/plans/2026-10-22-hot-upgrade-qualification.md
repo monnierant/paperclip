@@ -59,10 +59,10 @@ None is deployed. The remaining acceptance gates below are not waived.
 
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
-| Runner | `4d1335df5701962485e0503bedbdc1af14b3c7c7`: CI green, Greptile 5/5. Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. Authenticated-connection projection regression passed after its addition. | Three dependency-checker violations existed unchanged on the selected master baseline; they are not a passing boundary check. Synthetic execution does not qualify Codex/Claude. |
-| Server | `e860e0ec0721f1c11678df4e079e57b3b10cb9ca`: 40 real-Postgres/recovery/lease tests passed, five optional profiles skipped; three plugin adoption tests passed; server typecheck passed; Greptile 5/5. | CI's unchanged stylesheet-preload browser tests still fail. Hosted admission/continuity remains outstanding. |
-| Qualification | 49 focused tests passed, including the real-Postgres observer query; qualification typecheck passed. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | The new embedded database ownership test fails during host Postgres initialization; this is not passing lifecycle proof. Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. |
-| Transcript delivery | Review regressions cover a truncated consecutive event during history fetch and completed histories over 2,000 events. Legacy two-view browser journey passed. | Native browser journey, final candidate CI/review and remaining viewer/access journeys are in progress. |
+| Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
+| Server | Refreshed recovery, renewal and plugin-adoption suites: 43 passed, five optional profiles skipped. The subsequent liveness-pool fix passed all 822 native executor/renewal tests with real Postgres. Saturated application-pool, cancelled row-lock wait, expiry-during-lock and natural 60-second claim-lifetime regressions passed. | Final CI/review on the renewal fix remains required. An unchanged cleanup-page test failed one earlier CI shard. Hosted admission/continuity remains outstanding. |
+| Qualification | 49 focused tests passed, including the real-Postgres observer query. Completion-during-outage review fix: all 32 boundary tests and qualification typecheck pass. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | The embedded database lifecycle test cannot initialize on this macOS host; hosted Linux verification is running. Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. |
+| Transcript delivery | `d0ece7bd2dcaed7f27fc6dea76b788bfd39dfe58`: CI green and Greptile 5/5; 37 focused review/delivery tests pass. Native and legacy two-view browser journeys pass, including zero recurring reads during settled streaming, company switching, socket reconnect, terminal catch-up and reload. | Recheck the final restacked candidate. Deterministic browser dependencies are not live-harness evidence. |
 
 The supervisor observes HTTP readiness, natural ownership acquisition,
 authenticated attachment, resumed canonical ingestion, and backlog settlement
@@ -115,6 +115,11 @@ setup repeatedly exhausted host semaphores; integration checks moved to a
 throwaway Docker database without changing product recovery. The earlier hosted
 attempt exhausted BuildKit disk during image export, before launching a sandbox.
 No expensive retry should proceed without resolving its infrastructure cause.
+The current trusted hosted workflow has no per-run disk-capacity override or
+upgrade-manifest input. No local Daytona/model credentials are configured.
+Workflow changes on this branch cannot replace its required default-branch
+workflow authorization. Hosted continuity remains unqualified until an authorized
+path can build the image and consume the immutable A/B artifacts.
 
 ## Evidence layers
 
@@ -359,3 +364,19 @@ transactions and changed rows, with zero idle SQL and a successful positive
 control. The full merged restart suite passed 36 tests (five Docker-only skips),
 and all 29 tool-authority tests passed on a serial rerun after an initial database
 setup timeout. Workspace typecheck also passed after the migration merge.
+
+### Final review corrections (2026-10-24)
+
+Completed plugin runs may clear their dispatch flag during normal cleanup. The
+qualification boundary accepts that state only for the original succeeded run
+with its saved task identity and persisted provider-stop confirmation. Active
+runs still require dispatch. Missing stop proof and replacement identities fail.
+
+The server's native renewals now share the existing liveness pool with legacy
+renewals. Each active remote lease attempts renewal every 20 seconds, with one
+row lock and fenced update inside a transaction and a local 10-second statement
+timeout. Expiry is checked after acquiring the row lock. A cancelled attempt
+can retry within the original deadline, but a lost or late response cannot
+restore expired authority. This adds active-run SQL around renewal; it does not
+change the zero-per-text-checkpoint-write or idle-SQL gates. The text-chunk cost
+measurement above excludes periodic renewal overhead.
