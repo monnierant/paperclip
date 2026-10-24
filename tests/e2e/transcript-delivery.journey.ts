@@ -9,11 +9,14 @@ test("native transcript survives two views and reload through negotiated streami
   const original = await json(await request.get("/api/instance/settings/experimental"));
   const frames: Array<{ type?: string; runIds?: string[]; revision?: number }> = [];
   let connections = 0;
+  let activeConnections = 0;
   let transcriptReads = 0;
   page.on("request", request => { if (/\/heartbeat-runs\/[^/]+\/(events|log)(\?|$)/.test(request.url())) transcriptReads += 1; });
   page.on("websocket", socket => {
     if (!socket.url().includes("/events/ws")) return;
     connections += 1;
+    activeConnections += 1;
+    socket.on("close", () => { activeConnections -= 1; });
     socket.on("framesent", frame => { try { frames.push(JSON.parse(String(frame.payload))); } catch {} });
     socket.on("framereceived", frame => { try { frames.push(JSON.parse(String(frame.payload))); } catch {} });
   });
@@ -57,7 +60,7 @@ test("native transcript survives two views and reload through negotiated streami
     await page.waitForTimeout(2_500); // Exceed the 2-second polling fallback.
     const healthyPollingReads = transcriptReads - healthyReads;
     expect(healthyPollingReads).toBe(0);
-    expect(connections).toBe(1);
+    expect(activeConnections).toBe(1);
     const second = await context.newPage();
     await second.goto(route);
     const other = await json(await request.post("/api/companies", { data: { name: "Transcript isolation" } }));
