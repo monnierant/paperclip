@@ -76,6 +76,22 @@ database readiness were confirmed, the integration rerun passed. Runner/server t
 CI and review status remain on the linked PRs rather than treating older heads as
 proof of this correction.
 
+The next review found a stale Copilot source identity and a checkpoint fence that
+sampled database time before waiting for a row lock. The generated active profile
+and existing controller mocks are updated; all 90 affected runner compatibility
+and permission tests pass. The writer now locks in a CTE and samples wall time in
+the outer query, retaining one SQL statement and round trip. Its real-Postgres
+regression fails on the prior writer and passes with the fix, without changing
+stored checkpoints after expiry. The full recovery run passed 38 cases and skipped
+five optional profiles; two unchanged renewal cases failed while Docker became
+unavailable. After restoring the daemon and a confirmed-ready database, both
+renewal cases and the new lock-expiry test pass together with natural lease timing.
+The repeated 8/512-chunk SQL gate still records eight checkpoint writes, seven
+transactions, fourteen changed rows, zero streaming SQL and zero idle SQL. WAL
+was 37,424/37,720 bytes (diagnostic only). Runner identity checks and server
+typecheck pass. The first CTE implementation failed typecheck on a nested subquery
+projection; selecting its three needed fields explicitly fixed it before testing.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
