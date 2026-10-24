@@ -3876,7 +3876,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     if (event.type === "heartbeat.run.status") { requestCatchup(); return; }
     const row = liveRunEvent(event);
     if (!row) return;
+    const commitSignal = row.message === null && row.payload === null;
+    if (commitSignal) eventSequenceRef.current.requireHistory(row.seq);
     if (eventSequenceRef.current.observe(row.seq)) requestCatchup();
+    if (commitSignal) return;
     setEvents(previous => mergeRunEvents(previous, [row]).slice(-MAX_LIVE_EVENTS));
   });
 

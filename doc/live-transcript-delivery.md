@@ -103,3 +103,10 @@ This measures the in-process presentation boundary, not production network or
 database cost. CPU, heap deltas, and latency are diagnostic measurements, not
 performance assertions. Current acceptance evidence lives in
 `doc/plans/2026-10-22-hot-upgrade-qualification.md`.
+
+Agent Detail's event log also treats notifications without a message or payload as
+commit signals. It retains saved event details when a delayed signal arrives and
+requests canonical history for a signal not yet covered by its persisted cursor,
+including consecutive sequences. Complete live rows still merge directly without
+recurring history reads. Both development and production page variants use this
+behavior; their regressions fail on the preceding merge and pass after the fix.

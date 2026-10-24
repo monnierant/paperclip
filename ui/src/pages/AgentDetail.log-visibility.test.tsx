@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun, HeartbeatRunEvent, LiveEvent } from "@paperclipai/shared";
 import { afterEach, expect, it, vi } from "vitest";
-import { __liveUpdatesTestUtils } from "../context/LiveUpdatesProvider";
+import { __liveUpdatesTestUtils, type CompanyLiveEventHandler } from "../context/LiveUpdatesProvider";
 import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
@@ -113,5 +113,55 @@ it.each([LogViewer, ProductionLogViewer])("retains invocation details when compl
     await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
     expect(events).toHaveBeenCalledTimes(3);
     expect(container.textContent).toContain("invocation-retained-proof");
+  } finally { await act(async () => root.unmount()); }
+});
+
+it.each([LogViewer, ProductionLogViewer])("preserves saved event details and catches up payload-free commit signals (%#)", async Viewer => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" } as HeartbeatRun;
+  const row = (seq: number, message: string): HeartbeatRunEvent => ({ id: seq, seq, runId: run.id,
+    companyId: run.companyId, agentId: run.agentId, eventType: "item.completed", message,
+    stream: null, level: null, color: null, payload: { detail: message }, createdAt: new Date() });
+  events.mockResolvedValue([row(1, "saved event details")]);
+  const transcripts = new LiveTranscriptInterests();
+  const listeners = new Set<CompanyLiveEventHandler>();
+  const messages: Array<{ revision?: number }> = [];
+  const subscription = { companyId: run.companyId, transcripts,
+    subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
+  const emit = (seq: number, details?: HeartbeatRunEvent) => {
+    const event: LiveEvent = { id: seq, companyId: run.companyId, type: "heartbeat.run.event",
+      createdAt: new Date().toISOString(), payload: details ? { ...details } : {
+        runId: run.id, agentId: run.agentId, eventType: "item.completed", seq,
+      } };
+    for (const listener of listeners) listener(event);
+  };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  try {
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => {
+      transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+      transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    const initialReads = events.mock.calls.length;
+    expect(container.textContent).toContain("saved event details");
+    await act(async () => emit(1));
+    expect(container.textContent).toContain("saved event details");
+    expect(events).toHaveBeenCalledTimes(initialReads);
+    events.mockResolvedValueOnce([row(2, "new canonical event details")]);
+    await act(async () => emit(2));
+    expect(container.textContent).toContain("new canonical event details");
+    expect(events).toHaveBeenLastCalledWith(run.id, 1, 1000, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const caughtUpReads = events.mock.calls.length;
+    await act(async () => { emit(2); emit(3, row(3, "complete live event details")); });
+    expect(container.textContent).toContain("complete live event details");
+    await act(async () => vi.advanceTimersByTimeAsync(90_000));
+    expect(events).toHaveBeenCalledTimes(caughtUpReads);
+    expect(container.textContent).toContain("saved event details");
+    expect(container.textContent).toContain("new canonical event details");
   } finally { await act(async () => root.unmount()); }
 });
