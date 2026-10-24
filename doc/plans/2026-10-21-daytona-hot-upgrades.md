@@ -218,8 +218,13 @@ continues to enforce current company, agent, run, workspace, and lease ownership
 The shared driver permits absent OS process identifiers for provider-owned tasks;
 local and sandbox consumers keep their real process identifiers and probes.
 Adoption uses the persisted running artifact and does not prepare or submit a
-new process. The transport no longer requires controller-local launch preparation
-files when it adopts a surviving process. Ordinary launch and dead-process
+new process. Before attachment, the plugin owner reauthorizes the checkpoint's
+configuration ID through the existing `check_project_auth` operation using current
+project IDs, including when the IDs are unchanged but grants have been revoked.
+The runner's optional adoption hook requires a configuration bound to the exact
+execution; it does not require controller-local launch preparation files. Existing
+consumers without that hook retain their preparation/authorization callback and
+fail closed if its cache is missing. Ordinary launch and dead-process
 recovery retain their existing preparation checks. A plugin run without the new
 Postgres journal retains the historical recovery path.
 
@@ -525,3 +530,16 @@ active lease update. It does not add text checkpoints or change the idle-SQL gat
 comparison for text chunks excludes periodic lease renewal, so it does not measure
 this active-run overhead. Saturated-pool and row-lock tests use real Postgres;
 clock tests separately exercise response loss, retry and shutdown.
+
+### Current authority for retained resources (2026-10-24)
+
+Review identified that bypassing preparation after controller storage loss also
+bypassed its project authorization check. The runner now carries only the opaque
+configuration ID and exact execution identity in its bounded control metadata.
+The plugin adapter implements the new adoption authorization hook with its existing
+project authority check before connection registration. Revoked grants, mismatched
+identities, unsupported checks and a release during the check all reject adoption.
+Successful authorization does not prepare, submit or stop the surviving process.
+The same check is reused by the legacy preparation recovery path. This adds one
+project authorization call per adoption and bounded control metadata; it does not
+introduce periodic checks or text-triggered checkpoint writes.

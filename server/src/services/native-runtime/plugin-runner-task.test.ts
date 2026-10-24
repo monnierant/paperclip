@@ -48,6 +48,41 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  it("rechecks revoked grants for unchanged project IDs before adopting retained resources", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let allowed = true;
+    task.mockImplementation(async op => op.kind === "check_project_auth"
+      ? { ...await perform(op) as object, allowed } : perform(op));
+    const input = { task, projectIds: ["project-retained"], harness: "codex", projectAuthCheckVersion: 1 as const,
+      adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    await owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity);
+    allowed = false;
+    owner.rebind({ ...input });
+    await expect(owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity)).rejects.toThrow("project authentication conflicts");
+    expect(task.mock.calls.map(([op]) => op)).toEqual(Array(2).fill({ kind: "check_project_auth",
+      configurationId: "retained-configuration", provider: "openai", projectIds: ["project-retained"] }));
+  });
+  it.each(["identity", "unsupported", "released", "late-release"])("refuses adoption authorization after %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    task.mockImplementation(async op => { if (mode === "late-release" && op.kind === "check_project_auth") await gate; return perform(op); });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: ["project-current"], harness: "codex",
+      projectAuthCheckVersion: mode === "unsupported" ? undefined : 1, adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run");
+    if (mode === "released") await registration.release("detach");
+    const attempt = owner.driver.authorizeRunnerAdoption!("retained-configuration",
+      mode === "identity" ? { ...requirements.identity, runId: "unrelated" } : requirements.identity);
+    const rejection = expect(attempt).rejects.toThrow(mode === "identity" ? "identity mismatch"
+      : mode === "unsupported" ? "validation unavailable" : "preparation cancelled");
+    if (mode === "late-release") { await registration.release("detach"); finish(); }
+    await rejection;
+    await registration.release("detach");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(mode === "late-release" ? ["check_project_auth"] : []);
+  });
   it("adopts the saved task and detaches without preparing, submitting, or stopping it", async () => {
     const { task } = provider();
     const close = vi.fn(async () => {});

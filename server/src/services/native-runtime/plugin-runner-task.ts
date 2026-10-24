@@ -82,12 +82,19 @@ export function createPluginRunnerTaskOwner(input: {
     if (validation.kind !== "project_auth" || !validation.allowed || validation.configurationId !== configurationId
       || validation.provider !== provider) throw new Error("Plugin Runner project authentication conflicts with the selected managed account");
   };
+  const authorizeRunnerAdoption = async (configurationId: string, identity: DurableRecoveryIdentity) => {
+    if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
+    if (!input.adoptIdentity || Object.entries(input.adoptIdentity).some(([key, value]) => identity[key as keyof DurableRecoveryIdentity] !== value)) {
+      throw new Error("Plugin Runner adoption identity mismatch");
+    }
+    await checkProjectAuth(configurationId);
+    preparedLaunchId = configurationId;
+  };
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
     if (recovery && input.adoptIdentity && Object.entries(input.adoptIdentity).every(([key,value]) => requirements.identity[key as keyof DurableRecoveryIdentity] === value)) {
-      await checkProjectAuth(recovery.configurationId);
-      preparedLaunchId = recovery.configurationId;
+      await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
@@ -280,7 +287,7 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
-    prepareLaunch, readRunnerState, runnerProcessLauncher: launcher,
+    prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
     archiveExternalRunnerState: async archive => {
