@@ -112,6 +112,21 @@ cannot extend the original five-second backlog deadline. Existing protocol,
 checkpoint and canonical-log ownership is unchanged. Updated CI, review and
 browser evidence remain attributed to their candidate revisions on the PRs.
 
+The separate Paperclip review found premature local expiry after a delayed
+successful renewal and unlimited retries in opportunistic startup retention.
+The renewal owner now samples a monotonic deadline immediately before UPDATE,
+after acquiring the connection and row lock, while still deducting UPDATE/commit
+response time. Its public void-returning API and SQL work are unchanged. Startup
+retention stops after three failed passes, including query failures, and defers
+remaining rows until the next startup. The delayed-success and both retention
+regressions fail on the prior implementation. All 44 renewal/retention tests pass,
+including quiet time after the retry cap and successful cleanup at the next
+startup. Two real-Postgres renewal cases also pass in 107.45 seconds: one saturates
+the liveness pool through two delayed successful renewals with natural 60-second
+lease timing; the other retains application-pool isolation, SQL timeout and
+expiry-during-lock checks. Server typecheck passes. Final review and CI status
+remain attached to the exact candidate revisions on the PRs.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
