@@ -170,6 +170,16 @@ scope and normal admission gates retain precedence. A completed tool receipt can
 restore a lost response. Safe reads recheck current authority. An uncertain
 external mutation is not executed again without outcome evidence.
 
+Instruction update/restore tools recover their existing `instruction:<callId>`
+receipts through the instruction mutation owner. Recovery rechecks the current
+target permission, active run and exact arguments under the normal receipt lock;
+it cannot reserve or repeat a filesystem write. Missing receipts remain held,
+including a receipt removed between inspection and locked replay. The real
+Postgres/filesystem integration tests lose the commit acknowledgement for both
+tools and verify one write, one audit effect, current-permission revocation and
+Stop precedence. The optional `PAPERCLIP_TEST_DATABASE_URL` test host always uses
+a new owned database, never its existing data.
+
 The first rollout does not extend grace already configured in an old runner.
 The contract starts with runners admitted by the updated server. Legacy stdio
 adapters, database loss and destroyed sandboxes are outside this guarantee.

@@ -397,6 +397,11 @@ export class PaperclipRunnerToolAuthority {
     const { run } = context;
     if (RECOVERABLE_READ_OPERATIONS.has(call.tool)) return this.#recoverRead(call);
     const input = record(call.arguments);
+    if (call.tool === "update_agent_instructions" || call.tool === "restore_agent_instructions") {
+      const receipt = record(record(run.resultJson?.semanticToolReceipts)[`instruction:${call.callId}`]);
+      if (!Object.hasOwn(receipt, "result")) return null;
+      return { result: await this.#withInstructionMutationReceipt(call.tool, call.callId, input, true) };
+    }
     const key = typeof input.idempotencyKey === "string" ? input.idempotencyKey : null;
     const receipt = key ? record(record(run.resultJson?.semanticToolReceipts)[key]) : {};
     if (receipt.operationId === call.tool && canonicalJson(receipt.input) === canonicalJson(call.arguments)
@@ -2354,6 +2359,7 @@ export class PaperclipRunnerToolAuthority {
     tool: "update_agent_instructions" | "restore_agent_instructions",
     callId: string,
     input: Record<string, unknown>,
+    recoveryOnly = false,
   ): Promise<unknown> {
     if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
     const key = `instruction:${callId}`;
@@ -2373,7 +2379,7 @@ export class PaperclipRunnerToolAuthority {
       // the attempt *before* permitting that effect. If the effect transaction
       // or its acknowledgement is lost, a missing result is unknown, not a
       // license to run the instruction write a second time.
-      const reserved = await this.db.transaction(async (tx) => {
+      const reserved = recoveryOnly ? false : await this.db.transaction(async (tx) => {
         const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
         const bound = await authorize(tx as unknown as Db);
         const resultJson = record(context.run.resultJson);
@@ -2405,10 +2411,14 @@ export class PaperclipRunnerToolAuthority {
         return true;
       });
       try {
-        return await this.#withMutationReceipt(tool, key, input, (tx) =>
-          executeAgentInstructionTool({ db: tx, binding: {
+        return await this.#withMutationReceipt(tool, key, input, async (tx) => {
+          // Recovery reuses current authorization and receipt validation. If
+          // the saved receipt vanished after inspection, never repeat the write.
+          if (recoveryOnly) throw new SemanticToolOutcomeUnknownError(`paperclip_runner_instruction_receipt_unavailable call_id=${callId}`);
+          return executeAgentInstructionTool({ db: tx, binding: {
             companyId: this.binding.companyId, agentId: this.binding.agentId, runId: this.binding.runId,
-          }, tool, arguments: input }), { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
+          }, tool, arguments: input });
+        }, { beforeReceiptReplay: async (tx) => { await authorize(tx); } });
       } catch (error) {
         // Instruction validation, authorization and CAS errors precede the
         // file write. Storage errors and lost commit acknowledgements do not
