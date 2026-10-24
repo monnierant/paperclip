@@ -37,6 +37,13 @@ legacy logs also track log identity and persisted byte offsets. Streamed rows
 never advance the persisted-history cursor. A second sequence gap observed during
 an in-flight read remains pending until history covers it.
 
+Native publication signals carry a committed sequence without a PRP body. They
+trigger a canonical read through that sequence, including consecutive signals,
+and never enter the transcript merge. A delayed signal cannot replace complete
+text. Signals that arrive during an older read remain pending until history
+covers them. This adds event-driven reads for payload-free notifications, not a
+recurring poll or a recovery-checkpoint write.
+
 Catch-up runs on subscription, reconnect, show, explicit resynchronization, gaps,
 and terminal status. Live catch-up drains pending pages. Failed reads retry even
 when the socket remains connected. After successful negotiated catch-up there

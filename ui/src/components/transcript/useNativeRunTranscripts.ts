@@ -74,11 +74,18 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     }
     const row = liveRunEvent(event);
     if (!row) return;
-    if (sequence(runId).observe(row.seq) && !gapPendingRef.current.has(runId)) {
+    const cursor = sequence(runId);
+    // Native publication notifications carry a committed sequence without its
+    // PRP body. Catch up through that row even when the sequence is consecutive;
+    // a notification must never replace a complete historical or streamed row.
+    const envelope = row.payload?.prpEvent;
+    const hasTranscriptBody = envelope !== null && typeof envelope === "object" && !Array.isArray(envelope);
+    if (!hasTranscriptBody) cursor.requireHistory(row.seq);
+    if (cursor.observe(row.seq) && !gapPendingRef.current.has(runId)) {
       gapPendingRef.current.add(runId);
       if (!historyReadsRef.current.has(runId)) retry();
     }
-    setEventsByRun(previous => new Map(previous).set(runId, mergeRunEvents(previous.get(runId) ?? [], [row])));
+    if (hasTranscriptBody) setEventsByRun(previous => new Map(previous).set(runId, mergeRunEvents(previous.get(runId) ?? [], [row])));
   });
 
 
