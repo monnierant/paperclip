@@ -106,6 +106,12 @@ test("native transcript survives two views and reload through negotiated streami
     const comments = await json(await request.get(`/api/issues/${issue.id}/comments`));
     expect(comments.filter((comment: { body: string }) => comment.body.includes("STREAM-42"))).toHaveLength(1);
     await page.screenshot({ path: info.outputPath("native-transcript.png"), fullPage: true });
+    await page.goto(`/${company.issuePrefix}/agents/${agent.id}/runs/${runId}`);
+    const eventDetails = page.getByText(/^Events \(\d+\)$/).locator("..");
+    await expect(eventDetails.getByText("STREAM-42: The launch has two stages.", { exact: false }).first()).toBeVisible();
+    await page.reload();
+    await expect(eventDetails.getByText("STREAM-42: The launch has two stages.", { exact: false }).first()).toBeVisible();
+    await page.screenshot({ path: info.outputPath("native-agent-events.png"), fullPage: true });
     await info.attach("delivery-evidence", { body: JSON.stringify({ dependency: "deterministic Codex app-server", runId: runs[0].id,
       connections, healthyPollingReads, negotiated: frames.some(frame => frame.type === "live.subscribed"),
       interestRevisions: frames.filter(frame => frame.type === "live.interests") }), contentType: "application/json" });
