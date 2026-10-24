@@ -18,6 +18,7 @@ import {
 import { recoveryPostgresSupport as embeddedPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.ts";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { logger } from "../middleware/logger.js";
 
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -247,17 +248,25 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     const failure = fault === "query"
       ? vi.spyOn(db, "select").mockImplementation(() => { throw new Error("retention candidate query unavailable"); })
       : vi.spyOn(db, "transaction").mockRejectedValue(new Error("retention transaction unavailable"));
+    const warning = vi.spyOn(logger, "warn");
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
     try {
       await service().registerCheckpointExpiration(coordinator).ready;
-      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      await vi.waitFor(() => {
+        // No scheduled deadline can also mean a retry is currently running.
+        // Wait for the owner's final deferral before asserting quiet time.
+        expect(warning).toHaveBeenCalledWith(expect.objectContaining({ failedPasses: 3 }),
+          "startup checkpoint expiration retries exhausted; retained checkpoints deferred to next startup");
+        expect(failure).toHaveBeenCalledTimes(3);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
       const attempts = failure.mock.calls.length;
       expect(attempts).toBe(3);
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
       expect(failure).toHaveBeenCalledTimes(attempts);
     } finally {
-      await coordinator.stop(); failure.mockRestore(); vi.useRealTimers();
+      await coordinator.stop(); failure.mockRestore(); warning.mockRestore(); vi.useRealTimers();
     }
     expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
     const nextStartup = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
