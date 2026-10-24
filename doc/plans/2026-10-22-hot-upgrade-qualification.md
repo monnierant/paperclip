@@ -57,6 +57,25 @@ The review stack is [Runner #17097](https://github.com/paperclipai/paperclip/pul
 → [Transcript delivery #17456](https://github.com/paperclipai/paperclip/pull/17456).
 None is deployed. The remaining acceptance gates below are not waived.
 
+The final security review found that cache-independent adoption skipped a
+preparation callback which also checked managed-project grants. The correction
+keeps policy in the plugin adapter: Runner retains at most two opaque configuration
+IDs bound to exact execution identities and calls an optional authorization hook
+before registration. The adapter calls existing `check_project_auth` with current
+project IDs. Existing consumers without the hook keep the preparation callback;
+missing cache or bindings fail closed. No extra process, periodic check, or text
+checkpoint is introduced. Four transport regressions fail on the previous code;
+28 focused runner tests, the complete 429-test controller/transport suites, all
+34 plugin-owner tests and three real-Postgres SDK integration cases pass with the
+correction. The SDK regression exercises current-grant revocation through the
+actual runtime and plugin serialization, with synthetic provider resources.
+One warm-handoff case timed out during concurrent server compilation; the isolated
+rerun passed. The first Postgres attempt failed before tests because Docker
+returned an engine startup error and no database was listening; after engine and
+database readiness were confirmed, the integration rerun passed. Runner/server typechecks and protocol/dependency checks pass. Current
+CI and review status remain on the linked PRs rather than treating older heads as
+proof of this correction.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
