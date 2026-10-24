@@ -59,6 +59,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   };
   const gapPendingRef = useRef(new Set<string>());
   const historyReadsRef = useRef(new Map<string, AbortSignal>());
+  const refreshByRunRef = useRef(new Map<string, (force?: boolean) => void>());
   const previousCompanyRef = useRef(options.companyId);
   useEffect(() => {
     if (previousCompanyRef.current === options.companyId) return;
@@ -70,7 +71,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     const runId = typeof event.payload.runId === "string" ? event.payload.runId : null;
     if (!runId || !nativeRuns.some(run => run.id === runId)) return;
     if (event.type === "heartbeat.run.status" && typeof event.payload.status === "string" && !isLive(event.payload.status)) {
-      retry(); return;
+      refreshByRunRef.current.get(runId)?.(true); return;
     }
     const row = liveRunEvent(event);
     if (!row) return;
@@ -83,7 +84,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     if (!hasTranscriptBody) cursor.requireHistory(row.seq);
     if (cursor.observe(row.seq) && !gapPendingRef.current.has(runId)) {
       gapPendingRef.current.add(runId);
-      if (!historyReadsRef.current.has(runId)) retry();
+      refreshByRunRef.current.get(runId)?.();
     }
     if (hasTranscriptBody) setEventsByRun(previous => new Map(previous).set(runId, mergeRunEvents(previous.get(runId) ?? [], [row])));
   });
@@ -98,7 +99,8 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     }
     let cancelled = false;
     const controller = new AbortController();
-    const timers = new Set<number>();
+    const timers = new Map<string, number>();
+    const pendingRefresh = new Set<string>();
     const retainedIds = new Set(nativeRuns.map((run) => run.id));
     const retainMap = <T,>(previous: Map<string, T>) => {
       const next = new Map([...previous].filter(([id]) => retainedIds.has(id)));
@@ -118,6 +120,12 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     }
 
     const refreshRun = async (run: NativeRunTranscriptSource) => {
+      if (cancelled || historyReadsRef.current.has(run.id)) return;
+      // Live catch-up belongs to this run. Restarting the whole effect would
+      // abort slow paginated reads for unrelated historical runs on every item.
+      pendingRefresh.delete(run.id);
+      window.clearTimeout(timers.get(run.id));
+      timers.delete(run.id);
       historyReadsRef.current.set(run.id, controller.signal);
       let failed = false;
       try {
@@ -175,20 +183,31 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
       if (historyReadsRef.current.get(run.id) === controller.signal) historyReadsRef.current.delete(run.id);
       if (cancelled) return;
       setHydratedRunIds((previous) => previous.has(run.id) ? previous : new Set([...previous, run.id]));
-      if ((isLive(run.status) && !stream.healthy) || failed) {
+      if (pendingRefresh.has(run.id)) {
+        void refreshRun(run);
+      } else if ((isLive(run.status) && !stream.healthy) || failed) {
         const timer = window.setTimeout(() => {
-          timers.delete(timer);
+          timers.delete(run.id);
           void refreshRun(run);
         }, EVENT_POLL_INTERVAL_MS);
-        timers.add(timer);
+        timers.set(run.id, timer);
       }
     };
-    for (const run of nativeRuns) void refreshRun(run);
+    for (const run of nativeRuns) {
+      refreshByRunRef.current.set(run.id, (force = false) => {
+        // A terminal notification during a read requires one subsequent read;
+        // sequence-bearing notifications are covered by needsCatchup instead.
+        if (force) pendingRefresh.add(run.id);
+        void refreshRun(run);
+      });
+      void refreshRun(run);
+    }
     return () => {
       cancelled = true;
+      refreshByRunRef.current.clear();
       controller.abort();
       for (const [id, signal] of historyReadsRef.current) if (signal === controller.signal) historyReadsRef.current.delete(id);
-      for (const timer of timers) window.clearTimeout(timer);
+      for (const timer of timers.values()) window.clearTimeout(timer);
     };
   }, [nativeRuns, retryGeneration, visible, options.enabled, options.companyId, stream.healthy, stream.epoch]);
 

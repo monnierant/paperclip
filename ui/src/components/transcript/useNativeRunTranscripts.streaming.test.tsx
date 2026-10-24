@@ -18,11 +18,11 @@ let listeners: Set<CompanyLiveEventHandler>;
 let sent: Array<{ revision?: number; runIds?: string[] }>;
 let latest: ReturnType<typeof useNativeRunTranscripts>;
 let subscription: { companyId: string; transcripts: LiveTranscriptInterests; subscribe: (fn: CompanyLiveEventHandler) => () => void };
-const row = (seq: number, message = `row ${seq}`): HeartbeatRunEvent => ({
-  id: seq, seq, runId: "run-1", companyId: "company-1", agentId: "agent-1", eventType: "item.completed",
+const row = (seq: number, message = `row ${seq}`, runId = "run-1"): HeartbeatRunEvent => ({
+  id: seq, seq, runId, companyId: "company-1", agentId: "agent-1", eventType: "item.completed",
   stream: null, level: null, color: null, message, payload: { prpEvent: {
     schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceEventId: `event-${seq}`,
-    sourceSeq: seq, sourceInstanceId: "runner-1", sourceKind: "runner", runId: "run-1",
+    sourceSeq: seq, sourceInstanceId: "runner-1", sourceKind: "runner", runId,
     normalizedSessionId: "session-1", eventType: "item.completed", itemId: `message-${seq}`,
     emittedAt: "2026-10-24T00:00:00Z", payload: { kind: "agentMessage", channel: "progress", text: message },
   } }, createdAt: new Date("2026-10-24T00:00:00Z"),
@@ -34,12 +34,15 @@ function emit(seq: number, signalOnly = false) {
     : { ...value } };
   for (const listener of listeners) listener(event);
 }
-function Probe({ companyId = "company-1", enabled = true }: { companyId?: string; enabled?: boolean }) {
-  latest = useNativeRunTranscripts([{ id: "run-1", status: "running", runtimeMode: "native" }], { companyId, enabled });
+function Probe({ companyId = "company-1", enabled = true, older = false }: { companyId?: string; enabled?: boolean; older?: boolean }) {
+  latest = useNativeRunTranscripts([
+    { id: "run-1", status: "running", runtimeMode: "native" },
+    ...(older ? [{ id: "older", status: "succeeded", runtimeMode: "native" as const }] : []),
+  ], { companyId, enabled });
   return null;
 }
-async function render(companyId = "company-1", enabled = true) {
-  await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Probe companyId={companyId} enabled={enabled} /></LiveEventSubscriptionContext.Provider>));
+async function render(companyId = "company-1", enabled = true, older = false) {
+  await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Probe companyId={companyId} enabled={enabled} older={older} /></LiveEventSubscriptionContext.Provider>));
 }
 async function negotiate() {
   await act(async () => {
@@ -110,6 +113,64 @@ it("renders complete live PRP rows without initiating or scheduling history read
   await act(async () => { emit(1); emit(2); await vi.advanceTimersByTimeAsync(90_000); });
   expect(events).toHaveBeenCalledTimes(reads);
   expect(latest.transcriptByRun.get("run-1")).toEqual(nativeRunEventsToTranscript([row(1), row(2)]));
+});
+
+function emitTerminal() {
+  const event: LiveEvent = { id: 100, companyId: "company-1", type: "heartbeat.run.status",
+    createdAt: new Date().toISOString(), payload: { runId: "run-1", status: "succeeded" } };
+  for (const listener of listeners) listener(event);
+}
+
+it("finishes slow historical pages while a sibling receives repeated commit and terminal notifications", async () => {
+  await render(); await negotiate();
+  const olderReads: Array<{ cursor: number; signal: AbortSignal; resolve: (rows: HeartbeatRunEvent[]) => void }> = [];
+  events.mockImplementation((runId: string, cursor: number, _limit: number, { signal }: { signal: AbortSignal }) => {
+    if (runId === "older") return new Promise(resolve => olderReads.push({ cursor, signal, resolve }));
+    return Promise.resolve([row(cursor + 1)]);
+  });
+  await render("company-1", true, true);
+  expect(olderReads).toHaveLength(1);
+  await act(async () => emit(2, true));
+  expect(olderReads[0].signal.aborted).toBe(false);
+  expect(olderReads).toHaveLength(1);
+  const firstPage = Array.from({ length: 1_000 }, (_, i) => row(i + 1, `historical ${i + 1}`, "older"));
+  await act(async () => olderReads[0].resolve(firstPage));
+  expect(olderReads).toHaveLength(2);
+  expect(olderReads[1].cursor).toBe(1_000);
+  expect(latest.hydratedRunIds.has("older")).toBe(false);
+  await act(async () => emit(3, true));
+  await act(async () => emit(4, true));
+  await act(async () => emitTerminal());
+  expect(olderReads[1].signal.aborted).toBe(false);
+  expect(olderReads).toHaveLength(2);
+  const lastRow = row(1_001, "last historical output", "older");
+  await act(async () => olderReads[1].resolve([lastRow]));
+  expect(latest.hydratedRunIds.has("older")).toBe(true);
+  expect(latest.transcriptByRun.get("older")).toEqual(nativeRunEventsToTranscript([...firstPage, lastRow]));
+  const reads = events.mock.calls.length;
+  await act(async () => vi.advanceTimersByTimeAsync(90_000));
+  expect(events).toHaveBeenCalledTimes(reads);
+});
+
+it("queues one terminal catch-up behind an in-flight read without aborting or overlapping it", async () => {
+  await render(); await negotiate();
+  let complete!: (rows: HeartbeatRunEvent[]) => void;
+  let activeSignal!: AbortSignal;
+  events.mockImplementationOnce((_runId, _cursor, _limit, { signal }) => {
+    activeSignal = signal;
+    return new Promise(resolve => { complete = resolve; });
+  });
+  await act(async () => emit(1, true));
+  const reads = events.mock.calls.length;
+  await act(async () => { emitTerminal(); emitTerminal(); });
+  expect(activeSignal.aborted).toBe(false);
+  expect(events).toHaveBeenCalledTimes(reads);
+  events.mockResolvedValueOnce([row(2, "terminal output")]);
+  await act(async () => complete([row(1)]));
+  expect(events).toHaveBeenCalledTimes(reads + 1);
+  expect(latest.transcriptByRun.get("run-1")).toEqual(nativeRunEventsToTranscript([row(1), row(2, "terminal output")]));
+  await act(async () => vi.advanceTimersByTimeAsync(90_000));
+  expect(events).toHaveBeenCalledTimes(reads + 1);
 });
 
 it("performs no recurring history reads after an acknowledged catch-up, and retries a failed catch-up", async () => {

@@ -44,6 +44,10 @@ text. Signals that arrive during an older read remain pending until history
 covers them. This adds event-driven reads for payload-free notifications, not a
 recurring poll or a recovery-checkpoint write.
 
+Live catch-up refreshes only the affected run. Each run has at most one history
+read in flight and one retry timer. Terminal notifications during a read coalesce
+into one subsequent read. A busy run cannot cancel a sibling's paginated history.
+
 Catch-up runs on subscription, reconnect, show, explicit resynchronization, gaps,
 and terminal status. Live catch-up drains pending pages. Failed reads retry even
 when the socket remains connected. After successful negotiated catch-up there
