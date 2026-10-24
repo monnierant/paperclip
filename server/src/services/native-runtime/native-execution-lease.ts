@@ -18,6 +18,13 @@ export async function renewNativeSessionExecutionLease(input: {
   controller?: NativeControllerIdentity;
   leaseTtlMs?: number;
 }, { statementTimeoutMs = RENEWAL_STATEMENT_TIMEOUT_MS } = {}): Promise<void> {
+  await renewNativeSessionExecutionLeaseDeadline(input, { statementTimeoutMs });
+}
+
+async function renewNativeSessionExecutionLeaseDeadline(
+  input: Parameters<typeof renewNativeSessionExecutionLease>[0],
+  { statementTimeoutMs = RENEWAL_STATEMENT_TIMEOUT_MS } = {},
+): Promise<number> {
   const controller =
     input.controller ?? (await currentNativeControllerIdentity());
   const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
@@ -33,6 +40,7 @@ export async function renewNativeSessionExecutionLease(input: {
   }
   // Use the existing private pool; application queries must not consume the
   // remote controller's short renewal window. The timeout cancels actual SQL.
+  let confirmedDeadline = 0;
   const [updated] = await livenessDb(input.db).transaction(async tx => {
     await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
     // Check expiry after acquiring the row lock. An UPDATE alone can evaluate
@@ -41,6 +49,10 @@ export async function renewNativeSessionExecutionLease(input: {
       where ${nativeRunFinalizations.runId} = ${input.runId}
         and ${nativeRunFinalizations.companyId} = ${input.companyId}
         and ${nativeRunFinalizations.issueId} = ${input.issueId} for update`);
+    // The database extends from UPDATE time. Exclude connection/lock waits,
+    // but conservatively include UPDATE/commit response time without assuming
+    // that this server's wall clock agrees with the database's clock.
+    confirmedDeadline = performance.now() + leaseTtlMs;
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,
@@ -65,6 +77,7 @@ export async function renewNativeSessionExecutionLease(input: {
       .returning({ runId: nativeRunFinalizations.runId });
   });
   if (!updated) throw new Error("native_session_lease_lost");
+  return confirmedDeadline;
 }
 
 type RenewalInput = {
@@ -112,14 +125,13 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     const renew = () => {
       if (state!.lost || state!.busy) return;
       state!.busy = true;
-      const startedAt = Date.now();
-      state!.pending = renewNativeSessionExecutionLease({ ...input, leaseTtlMs: ttlMs })
-        .then(() => {
+      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...input, leaseTtlMs: ttlMs })
+        .then(confirmedDeadline => {
           // A late database response cannot restore local authority after loss
           // or recreate a timer after the final caller has stopped.
           if (state!.lost || state!.references === 0) return;
           clearTimeout(state!.deadline);
-          state!.deadline = deadline(ttlMs - (Date.now() - startedAt));
+          state!.deadline = deadline(confirmedDeadline - performance.now());
         })
         .catch((error: unknown) => {
           // A cancelled statement can retry at the next tick, but does not

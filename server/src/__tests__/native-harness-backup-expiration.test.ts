@@ -15,14 +15,10 @@ import {
   nativeRunFinalizations,
   nativeRunnerCheckpoints,
 } from "@paperclipai/db";
-import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as embeddedPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.ts";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -39,12 +35,12 @@ async function exists(target: string) {
 
 describeEmbeddedPostgres("native harness backup expiration", () => {
   let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDb: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
   let stateBase = "";
   const now = new Date();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-backup-expiration-");
+    tempDb = await startRecoveryPostgres("paperclip-native-backup-expiration-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -242,6 +238,34 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
       await coordinator.stop();
       transaction.mockRestore();
     }
+  });
+
+  it.each(["query", "transaction"] as const)("bounds persistent startup %s failures and becomes quiet until the next startup", async fault => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    const failure = fault === "query"
+      ? vi.spyOn(db, "select").mockImplementation(() => { throw new Error("retention candidate query unavailable"); })
+      : vi.spyOn(db, "transaction").mockRejectedValue(new Error("retention transaction unavailable"));
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    try {
+      await service().registerCheckpointExpiration(coordinator).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      const attempts = failure.mock.calls.length;
+      expect(attempts).toBe(3);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      expect(failure).toHaveBeenCalledTimes(attempts);
+    } finally {
+      await coordinator.stop(); failure.mockRestore(); vi.useRealTimers();
+    }
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+    const nextStartup = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    try {
+      await service().registerCheckpointExpiration(nextStartup).ready;
+      expect(await db.select().from(nativeRunnerCheckpoints)).toEqual([]);
+      expect(nextStartup.nextWakeAt()).toBeNull();
+    } finally { await nextStartup.stop(); }
   });
 
   it("expires unreferenced settled checkpoints even with an empty controller disk and fences old writers", async () => {

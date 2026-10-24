@@ -36,6 +36,7 @@ const SETTLED_FINALIZATION_PHASES = ["committed", "terminal_failure"];
 const LIVE_LEASE_STATUSES = ["active", "released", "retained", "pending_cleanup"];
 const CLOSED_ISSUE_STATUSES = ["done", "cancelled"];
 const MAX_CONTROL_PLANE_STATE_BYTES = 4 * 1024 * 1024;
+const CHECKPOINT_EXPIRATION_MAX_FAILED_PASSES = 3;
 
 export type NativeHarnessBackupExpirationOptions = {
   closedForDays?: number;
@@ -680,15 +681,32 @@ export function nativeHarnessBackupExpirationService(
     // Persisted rows remain safe; seven days is a minimum age, not a deadline.
     let pending = true;
     let retryFailedPage = false;
+    let failedPasses = 0;
+    const failedPass = (err?: unknown) => {
+      pending = ++failedPasses < CHECKPOINT_EXPIRATION_MAX_FAILED_PASSES;
+      logger.warn({ err, failedPasses }, pending
+        ? "startup checkpoint expiration will retry a failed pass"
+        : "startup checkpoint expiration retries exhausted; retained checkpoints deferred to next startup");
+    };
     return coordinator.register(DELIVERY_QUEUES.nativeCheckpointExpiration, {
       retryMs: 1000,
       pausePassiveMaintenance: true,
       run: async () => {
-        const result = await tickCheckpoints();
-        retryFailedPage ||= result.failed > 0;
-        pending = result.truncated || retryFailedPage;
-        if (!result.truncated) retryFailedPage = false;
-        if (result.checkpointCandidates || result.failed) logger.info(result, "startup native checkpoint expiration");
+        if (!pending) return;
+        try {
+          const result = await tickCheckpoints();
+          retryFailedPage ||= result.failed > 0;
+          pending = result.truncated || retryFailedPage;
+          if (!result.truncated) {
+            if (retryFailedPage) failedPass();
+            retryFailedPage = false;
+          }
+          if (result.checkpointCandidates || result.failed) logger.info(result, "startup native checkpoint expiration");
+        } catch (err) {
+          // Candidate-query failures need the same finite startup budget as
+          // per-row failures; the shared coordinator otherwise retries forever.
+          failedPass(err);
+        }
       },
       hasPending: async () => pending,
     });

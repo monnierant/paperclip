@@ -5,13 +5,32 @@ import { startNativeSessionExecutionLeaseRenewal } from "./native-execution-leas
 function fixture() {
   const returning = vi.fn(async () => [{ runId: "run" }]);
   const update = vi.fn(() => ({ set: () => ({ where: () => ({ returning }) }) }));
-  const db = { update, transaction: async (run: (tx: unknown) => Promise<unknown>) => run({ update, execute: vi.fn() }) };
-  return { update, returning, input: { db: db as unknown as Db, runId: "run", companyId: "company", issueId: "issue",
+  const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ update, execute: vi.fn() }));
+  const db = { update, transaction };
+  return { update, returning, transaction, input: { db: db as unknown as Db, runId: "run", companyId: "company", issueId: "issue",
     leaseOwner: "owner", attempt: 1, controller: { bootId: "boot", pid: 1, processStartedAt: new Date() }, remote: true,
     onLost: vi.fn(async () => undefined) } };
 }
 afterEach(() => vi.useRealTimers());
 describe("native execution renewal ownership", () => {
+  it("keeps a successfully renewed lease through repeated slow connection acquisition", async () => {
+    vi.useFakeTimers();
+    const { input, update, transaction } = fixture();
+    const connected = transaction.getMockImplementation()!;
+    transaction.mockImplementation(async run => {
+      await new Promise(resolve => setTimeout(resolve, 30_000));
+      return connected(run);
+    });
+    const guard = startNativeSessionExecutionLeaseRenewal(input);
+    try {
+      // Renewals start at 20s/60s and extend the database lease at 50s/90s.
+      // Connection waits must not shorten the successfully extended ownership.
+      await vi.advanceTimersByTimeAsync(95_000);
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(input.onLost).not.toHaveBeenCalled();
+    } finally { await guard.stop().catch(() => undefined); }
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("shares one timer across preparation and execution and stops idle SQL after both release", async () => {
     vi.useFakeTimers();
     const { input, update } = fixture();

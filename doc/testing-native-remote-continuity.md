@@ -154,6 +154,11 @@ and no tracked execution. There is no additional idle checkpoint scan; startup
 recovery remains the first adoption path and the orphan cadence retries concrete
 unowned active runs while ownership is unresolved.
 
+Opportunistic checkpoint retention stops after three failed passes in a startup,
+including candidate-query failures. It leaves retained rows intact, logs the
+deferred work and becomes quiet. The next startup can retry; a persistent storage
+or permission failure must not create an indefinite one-second database loop.
+
 Plugin-owned workspace tasks use the same journal and recovery window. Their
 task owner verifies the saved identity and running status through the task API,
 then reconnects using the original active lease. It never fabricates a local PID
@@ -162,6 +167,11 @@ claim; the plugin module retains task-protocol parsing and process ownership.
 Local, SSH, and sandbox drivers retain their existing process identity checks.
 
 Remote execution leases expire after 60 seconds and renew every 20 seconds.
+The local confirmed deadline starts immediately before the renewing UPDATE,
+after connection and row-lock acquisition. A monotonic clock accounts for the
+UPDATE/commit response delay without subtracting the earlier pool wait or
+depending on synchronization with the database clock. Late responses cannot
+restore a controller that has already lost local authority.
 Graceful shutdown detaches and releases the lease. Startup and the existing
 orphan sweep claim eligible expired owners; another container's PID is not
 ownership proof. The runner reconnect window is seven minutes, providing margin
