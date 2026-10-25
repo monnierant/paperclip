@@ -152,6 +152,17 @@ passed with the same setup timeout. Product retry limits and quiet-time assertio
 are unchanged. The runner fixes belong to PR 1 and this test fix belongs to PR 2.
 Final CI/review results remain attached to each exact PR candidate.
 
+CI 40144348549 then caught two test issues. The regenerated Copilot identity
+still had an old pinned digest in the installation test; the corrected pin
+passes all 95 installation/profile/permission tests. The in-process recovery
+fixture observed all 64 events at the controller before the last eight
+acknowledgements reached the runner. It now waits for the independent runner
+receipt to report 64 acknowledged events and zero retained events. All three
+fixture cases pass in 16.18 seconds, including filesystem-only compatibility
+and deadline expiry. This strengthens the settlement witness without changing
+production behavior, the workload count or the reconnect deadline. Both failed
+CI shards remain retained; fresh CI is required for the corrected candidate.
+
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
 | Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
