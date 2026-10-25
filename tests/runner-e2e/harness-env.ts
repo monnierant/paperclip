@@ -131,6 +131,10 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  // The supervisor's read-only recovery observer must use the same disposable
+  // instance key as the serving child, never a launching shell's vault key.
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY;
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
   delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
