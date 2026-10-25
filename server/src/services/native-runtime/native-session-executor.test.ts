@@ -84,6 +84,7 @@ import {
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import * as nativeSessionResume from "./native-session-resume.js";
+import * as nativeLeaseRenewal from "./native-execution-lease.js";
 import { buildNativeHeartbeatPreparationSpans, createNativeRunTrace } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -9911,6 +9912,44 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("owns renewal from fresh claim commit through preparation failure", async () => {
+    const fresh = { ...structuredClone(execution), provider: { kind: "acpx", agent: "claude",
+      model: "claude-sonnet-4-6", profile: QUALIFIED_ACPX_PROFILES.claude } } as NativeExecutionInput;
+    const db = leaseDb(fresh);
+    const select = db.select.bind(db);
+    const failure = new Error("accounting history unavailable");
+    vi.spyOn(db, "select").mockImplementation((...args: unknown[]) => {
+      const query = (select as (...args: unknown[]) => ReturnType<Db["select"]>)(...args);
+      const from = query.from.bind(query);
+      query.from = ((table: unknown) => {
+        if (table === heartbeatRunEvents) throw failure;
+        return from(table as never);
+      }) as typeof query.from;
+      return query;
+    });
+    const stop = vi.fn(async () => undefined);
+    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop });
+    let reached!: () => void, release!: () => void;
+    const claiming = new Promise<void>(resolve => { reached = resolve; });
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    const running = executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "fresh-runner",
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "fresh-environment", leaseId: "fresh-lease" },
+      onEvent: async event => {
+        if (event.payload?.span === "native.coordinator.claim") { reached(); await preparation; }
+      },
+    }).catch(error => error);
+    try {
+      await claiming;
+      expect(renew).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        db, runId: fresh.binding.runId, attempt: 1, remote: true,
+      }));
+      expect(stop).not.toHaveBeenCalled();
+      release();
+      expect(await running).toBe(failure);
+      expect(stop).toHaveBeenCalledOnce();
+    } finally { release(); await running; renew.mockRestore(); }
+  });
+
   it("persists closed remote recovery evidence without replacing saved run results", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const onEvent = vi.fn(async () => undefined);

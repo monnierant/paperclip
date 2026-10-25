@@ -979,6 +979,48 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("keeps a fresh remote claim alive past its initial lease while preparation is blocked", async () => {
+    const fixture = await seedRun("FRESH-SLOW-PREPARATION");
+    const environmentId = randomUUID(), leaseId = randomUUID();
+    await fixture.db.insert(environments).values({ id: environmentId, name: "Fresh preparation fixture", driver: "sandbox" });
+    await fixture.db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId,
+      heartbeatRunId: fixture.runId, issueId: fixture.issueId, status: "active",
+      provider: "fixture", providerLeaseId: "fresh-preparation-fixture" });
+    const execution = buildNativeExecutionInput({ companyId, agentId, runId: fixture.runId,
+      issue: { id: fixture.issueId, identifier: "NRR-FRESH-SLOW", title: "Prepare slowly", description: null, workMode: "standard" },
+      taskPrompt: "Prepare a fresh execution.", provider: "codex",
+      workspace: { id: fixture.runId, cwd: runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: fixture.native.normalizedSessionId, runtimeContext: nativeRuntimeContextFixture(),
+      completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Prepare once", criteria: [{ id: "objective", requirement: "Retain ownership" }] } },
+    });
+    // Stop at the provider boundary after checking ownership; no harness is launched.
+    const failure = new Error("end fresh preparation experiment");
+    const backend = { descriptor: async () => { throw failure; }, openSession: async () => { throw failure; } };
+    let reached!: () => void, release!: () => void;
+    const claimed = new Promise<void>(resolveReady => { reached = resolveReady; });
+    const preparation = new Promise<void>(resolveReady => { release = resolveReady; });
+    const running = executePaperclipNativeSession({ db: fixture.db, execution,
+      runnerInstanceId: fixture.native.runnerInstanceId, backend,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, leaseId, remoteCwd: runtimeRoot },
+      onEvent: async event => {
+        if (event.payload?.span === "native.coordinator.claim") { reached(); await preparation; }
+      },
+    }).catch(error => error);
+    try {
+      await Promise.race([claimed, running.then(error => { throw error; })]);
+      const [initial] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      await new Promise(resolveWait => setTimeout(resolveWait, Math.max(0, initial.leaseExpiresAt!.getTime() - Date.now() + 2_000)));
+      const [current] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(current.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+      expect(current.leaseOwner).toBe(initial.leaseOwner);
+      expect(current.controllerGeneration).toBe(initial.controllerGeneration);
+      expect(current.attempt).toBe(1);
+      release();
+      expect(await running).toBe(failure);
+    } finally { release(); await running; }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("renews a remote claim through slow preparation and shares renewal with execution", async () => {
     const fixture = await seedRun("SLOW-RECOVERY-PREPARATION");
     const root = resolve(runtimeRoot, fixture.runId);

@@ -167,6 +167,10 @@ claim; the plugin module retains task-protocol parsing and process ownership.
 Local, SSH, and sandbox drivers retain their existing process identity checks.
 
 Remote execution leases expire after 60 seconds and renew every 20 seconds.
+Fresh admission starts renewal immediately after its claim commits, before
+accounting history, retained-session cleanup or other preparation. The startup
+owner holds that same renewal through execution and drains it on preparation
+failure; recovery retains its existing shared preparation/execution owner.
 The local confirmed deadline starts immediately before the renewing UPDATE,
 after connection and row-lock acquisition. A monotonic clock accounts for the
 UPDATE/commit response delay without subtracting the earlier pool wait or
