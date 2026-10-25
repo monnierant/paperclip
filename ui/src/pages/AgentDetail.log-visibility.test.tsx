@@ -98,10 +98,11 @@ it.each([LogViewer, ProductionLogViewer])("uses shared streaming and retains fal
   expect(messages.at(-1)?.runIds).toEqual([]);
 });
 
-it.each([LogViewer, ProductionLogViewer])("retains invocation details when completed history exceeds the live window (%#)", async Viewer => {
+// Rendering thousands of real event rows is part of this proof, not a five-second latency gate.
+it.each([LogViewer, ProductionLogViewer])("bounds automatic event history and pages further only on request (%#)", async Viewer => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
-  const rows = Array.from({ length: 2001 }, (_, index) => ({ id: index + 1, seq: index + 1,
+  const rows = Array.from({ length: 2_001 }, (_, index) => ({ id: index + 1, seq: index + 1,
     runId: "run-1", companyId: "company-1", agentId: "agent-1", createdAt: new Date(),
     eventType: index === 0 ? "adapter.invoke" : "output", stream: "system" as const, level: "info" as const,
     color: null, message: null, payload: index === 0 ? { command: "invocation-retained-proof", args: [], cwd: "/workspace" } : null }));
@@ -111,10 +112,21 @@ it.each([LogViewer, ProductionLogViewer])("retains invocation details when compl
   const root = createRoot(container);
   try {
     await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("invocation-retained-proof");
+    const more = [...container.querySelectorAll("button")].find(button => button.textContent === "Load more events");
+    expect(more).toBeDefined();
+    events.mockRejectedValueOnce(new Error("history unavailable"));
+    await act(async () => more!.click());
+    expect(container.textContent).toContain("Could not load events. Try again.");
+    expect(container.textContent).toContain("invocation-retained-proof");
+    await act(async () => more!.click());
     expect(events).toHaveBeenCalledTimes(3);
+    expect(container.textContent).not.toContain("Could not load events. Try again.");
+    expect(events).toHaveBeenLastCalledWith(run.id, 1000, 1000, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(container.textContent).toContain("invocation-retained-proof");
   } finally { await act(async () => root.unmount()); }
-});
+}, 30_000);
 
 it.each([LogViewer, ProductionLogViewer])("preserves saved event details and catches up payload-free commit signals (%#)", async Viewer => {
   vi.useFakeTimers();
@@ -163,8 +175,17 @@ it.each([LogViewer, ProductionLogViewer])("preserves saved event details and cat
     expect(events).toHaveBeenCalledTimes(caughtUpReads);
     expect(container.textContent).toContain("saved event details");
     expect(container.textContent).toContain("new canonical event details");
+    await act(async () => {
+      for (let seq = 4; seq <= 2_205; seq++) emit(seq, row(seq, `live row ${seq}`));
+    });
+    expect(container.textContent).toContain("saved event details");
+    expect(container.textContent).toContain("live row 2205");
+    expect(container.textContent).toContain("Events (2200)");
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={{ ...run, status: "succeeded" }} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    expect(container.textContent).toContain("saved event details");
+    expect(container.textContent).toContain("live row 2205");
   } finally { await act(async () => root.unmount()); }
-});
+}, 30_000);
 
 it.each([
   { Viewer: LogViewer, stalled: "log" }, { Viewer: ProductionLogViewer, stalled: "log" },

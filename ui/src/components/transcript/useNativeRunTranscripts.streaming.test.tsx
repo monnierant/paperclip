@@ -205,3 +205,27 @@ it("withdraws disabled views and rejects events from the previous company", asyn
   await act(async () => emit(3));
   expect(latest.transcriptByRun.get("run-1") ?? []).toEqual([]);
 });
+
+
+it("finishes catch-up while unrelated consumers repeatedly replace shared interests", async () => {
+  await render(); await negotiate();
+  let complete!: (rows: HeartbeatRunEvent[]) => void;
+  events.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  await act(async () => emit(1, true));
+  const reads = events.mock.calls.length;
+  const signal = events.mock.calls.at(-1)![3].signal as AbortSignal;
+  for (let index = 0; index < 4; index++) {
+    let release!: () => void;
+    await act(async () => { release = store.acquire([`unrelated-${index}`]); });
+    expect(signal.aborted).toBe(false);
+    await act(async () => store.receive({ type: "live.subscribed", version: 1, revision: sent.at(-1)?.revision }));
+    await act(async () => { release(); });
+    await act(async () => store.receive({ type: "live.subscribed", version: 1, revision: sent.at(-1)?.revision }));
+    expect(signal.aborted).toBe(false);
+    expect(events).toHaveBeenCalledTimes(reads);
+  }
+  await act(async () => complete([row(1, "uninterrupted catch-up")]));
+  expect(latest.transcriptByRun.get("run-1")).toEqual(nativeRunEventsToTranscript([row(1, "uninterrupted catch-up")]));
+  await act(async () => vi.advanceTimersByTimeAsync(90_000));
+  expect(events).toHaveBeenCalledTimes(reads);
+});

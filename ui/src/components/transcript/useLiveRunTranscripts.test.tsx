@@ -871,6 +871,40 @@ describe("useLiveRunTranscripts", () => {
     } finally { await act(async () => root.unmount()); }
   });
 
+  it("keeps a legacy catch-up in flight through unrelated interest replacements", async () => {
+    vi.useFakeTimers();
+    let value: ReturnType<typeof useLiveRunTranscripts>;
+    function Harness() {
+      value = useLiveRunTranscripts({ companyId: "company-1", runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }] });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    let finish!: (result: Awaited<ReturnType<typeof logMock>>) => void;
+    try {
+      await act(async () => root.render(<Harness />));
+      logMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      await act(async () => negotiate());
+      const reads = logMock.mock.calls.length;
+      const signal = logMock.mock.calls.at(-1)![3].signal;
+      for (let index = 0; index < 4; index++) {
+        let release!: () => void;
+        await act(async () => { release = interests.acquire([`native-sibling-${index}`]); });
+        expect(signal.aborted).toBe(false);
+        await act(async () => acknowledge());
+        await act(async () => release());
+        await act(async () => acknowledge());
+        expect(signal.aborted).toBe(false);
+        expect(logMock).toHaveBeenCalledTimes(reads);
+      }
+      await act(async () => finish({ runId: "run-1", store: "memory", logRef: "log-1", content:
+        JSON.stringify({ seq: 1, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk: "uninterrupted legacy output" }) + "\n", nextOffset: 1 }));
+      expect(value!.transcriptByRun.get("run-1")).toEqual(expect.arrayContaining([expect.objectContaining({ chunk: "uninterrupted legacy output" })]));
+      const settled = logMock.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(90_000));
+      expect(logMock).toHaveBeenCalledTimes(settled);
+    } finally { await act(async () => root.unmount()); }
+  });
+
   it("keeps HTTP polling until interest acknowledgement, then stops recurring reads", async () => {
     vi.useFakeTimers();
     function Harness({ bytes = 0 }: { bytes?: number }) {

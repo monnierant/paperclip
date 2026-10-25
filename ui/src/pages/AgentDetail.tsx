@@ -4023,6 +4023,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
   const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const hasMoreEventsRef = useRef(false);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
+  const loadMoreEventsRef = useRef<(() => void) | null>(null);
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
@@ -4127,9 +4132,20 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     eventsReadCursorRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
     wasLiveRef.current = isLive;
     logIdentityRef.current = run.logRef ?? null; retiredLogRefs.current.clear();
+    hasMoreEventsRef.current = false; setHasMoreEvents(false); setLoadingMoreEvents(false); setEventsError(null);
     setEvents([]); setLoading(true);
   }, [run.id, run.companyId]);
   useEffect(() => { if (isLive) wasLiveRef.current = true; }, [isLive]);
+
+  function appendEvents(rows: HeartbeatRunEvent[]) {
+    setEvents(previous => {
+      const merged = mergeRunEvents(previous, rows);
+      // Keep invocation/context rows as well as the live tail. Completed history
+      // grows only when the user requests another bounded page.
+      return isLive && merged.length > 200 + MAX_LIVE_EVENTS
+        ? [...merged.slice(0, 200), ...merged.slice(-MAX_LIVE_EVENTS)] : merged;
+    });
+  }
 
   const stream = useTranscriptLiveStream(isLive ? [run.id] : [], { companyId: run.companyId, enabled: visible }, event => {
     if (event.companyId !== run.companyId) return;
@@ -4166,11 +4182,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     if (commitSignal) eventSequenceRef.current.requireHistory(row.seq);
     if (eventSequenceRef.current.observe(row.seq)) refreshEventsRef.current?.();
     if (commitSignal) return;
-    setEvents(previous => mergeRunEvents(previous, [row]).slice(-MAX_LIVE_EVENTS));
+    appendEvents([row]);
   });
 
-  // Only HTTP advances this cursor. Live rows can arrive while a page is in
-  // flight, so merge by canonical sequence and never skip a hole in history.
+  // Only HTTP advances this cursor. A full page requires explicit pagination;
+  // notifications cannot turn a long event history into an unbounded HTTP drain.
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
@@ -4178,39 +4194,38 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     const abort = new AbortController();
     let reading = false;
     let pendingRefresh = false;
-    const read = async () => {
-      if (cancelled || reading) return;
-      reading = true; pendingRefresh = false;
+    const read = async (requested = false) => {
+      if (cancelled || reading || (hasMoreEventsRef.current && !requested)) return;
+      reading = true; pendingRefresh = false; setLoadingMoreEvents(true); setEventsError(null);
       window.clearTimeout(timer); timer = undefined;
       let failed = false;
       try {
-        let cursor = eventsReadCursorRef.current;
-        for (;;) {
-          const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
-          if (cancelled) return;
-          setEvents(previous => {
-            const merged = mergeRunEvents(previous, rows);
-            return isLive ? merged.slice(-MAX_LIVE_EVENTS) : merged;
-          });
-          const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
-          eventsReadCursorRef.current = next;
-          eventSequenceRef.current.confirm(next);
-          if (rows.length < 1000 || next <= cursor) break;
-          cursor = next;
-        }
+        const cursor = eventsReadCursorRef.current;
+        const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
+        if (cancelled) return;
+        appendEvents(rows);
+        const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
+        eventsReadCursorRef.current = next;
+        eventSequenceRef.current.confirm(next);
+        hasMoreEventsRef.current = rows.length === 1000 && next > cursor;
+        setHasMoreEvents(hasMoreEventsRef.current);
         failed = eventSequenceRef.current.needsCatchup;
-      } catch { failed = true; }
+      } catch { failed = true; if (!cancelled) setEventsError("Could not load events. Try again."); }
       if (cancelled) return;
-      reading = false;
-      setLoading(false);
+      reading = false; setLoadingMoreEvents(false); setLoading(false);
+      if (hasMoreEventsRef.current) return;
       if (pendingRefresh) void read();
       else if (failed || (isLive && !stream.healthy)) timer = window.setTimeout(() => void read(), 2000);
     };
     // Event history and shell-log history have separate cursors and lifetimes.
     // Live signals must not cancel either reader's useful in-flight page.
     refreshEventsRef.current = (force = false) => { if (force) pendingRefresh = true; void read(); };
+    loadMoreEventsRef.current = () => { void read(true); };
     void read();
-    return () => { cancelled = true; refreshEventsRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+    return () => {
+      cancelled = true; refreshEventsRef.current = null; loadMoreEventsRef.current = null;
+      abort.abort(); if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [visible, run.id, run.companyId, run.status, stream.healthy, stream.epoch]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
@@ -4556,9 +4571,15 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         </div>
       )}
 
-      {events.length > 0 && (
+      {(events.length > 0 || eventsError) && (
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          {eventsError && <p className="text-sm text-destructive">{eventsError}</p>}
+          {hasMoreEvents && (
+            <Button variant="outline" size="sm" disabled={loadingMoreEvents} onClick={() => loadMoreEventsRef.current?.()}>
+              {loadingMoreEvents ? "Loading..." : "Load more events"}
+            </Button>
+          )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color

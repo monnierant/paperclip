@@ -16,6 +16,10 @@ The browser then sends `live.interests`, a monotonically increasing `revision`,
 and a replacement `runIds` array. The server applies that complete set before
 replying with `live.subscribed` and the applied revision. The browser ignores
 stale acknowledgements. Every connection starts a new revision sequence.
+An unchanged run stays healthy while unrelated interests change. New interests
+wait for an acknowledgement that includes them; only connection changes or an
+explicit resynchronization advance the shared recovery generation. This avoids
+aborting existing readers when another view starts or stops watching a run.
 
 All mounted consumers share the existing company connection. Interests are
 reference counted: removing one of two views of the same run does not unsubscribe
@@ -53,10 +57,16 @@ signal for one cannot abort the other's page or advance its persisted cursor;
 terminal notifications queue a follow-up for each active reader.
 
 Catch-up runs on subscription, reconnect, show, explicit resynchronization, gaps,
-and terminal status. Live catch-up drains pending pages. Failed reads retry even
+and terminal status. Task transcript catch-up drains pending pages. Failed reads retry even
 when the socket remains connected. After successful negotiated catch-up there
 are no recurring transcript reads. Historical agent-detail logs retain their
-existing explicit pagination. Older clients and servers retain fallback polling.
+existing explicit pagination. Agent Detail event history also reads at most one
+1,000-row page automatically; a full page exposes **Load more events** and pauses
+automatic history reads until the user requests the next page. Full live events
+continue to arrive. Live retention keeps the opening 200 events (including the
+invocation card) plus the latest 2,000, including through terminal transition.
+Completed runs retain explicitly requested history. Older clients and servers
+retain fallback polling when no explicit event page is waiting.
 
 ## Backpressure
 

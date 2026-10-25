@@ -1,7 +1,7 @@
 import type { LiveDeliveryClientMessage } from "@paperclipai/shared";
 
-export interface TranscriptStreamState { healthy: boolean; epoch: number }
-export const DISCONNECTED_TRANSCRIPT_STREAM: TranscriptStreamState = { healthy: false, epoch: 0 };
+export interface TranscriptStreamState { healthy: boolean; epoch: number; subscribedRunIds: ReadonlySet<string> }
+export const DISCONNECTED_TRANSCRIPT_STREAM: TranscriptStreamState = { healthy: false, epoch: 0, subscribedRunIds: new Set() };
 interface Sender { send(data: string): void }
 
 /** Shared by every consumer in one company connection. No execution authority. */
@@ -12,11 +12,14 @@ export class LiveTranscriptInterests {
   #capable = false;
   #revision = 0;
   #acknowledged = 0;
+  #lastResyncRevision = 0;
+  #subscribedRunIds = new Set<string>();
+  #sentRunIds: string[] = [];
   #snapshot: TranscriptStreamState = DISCONNECTED_TRANSCRIPT_STREAM;
   readonly snapshot = () => this.#snapshot;
   readonly subscribe = (listener: () => void) => { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; };
-  #publish(healthy: boolean) {
-    this.#snapshot = { healthy, epoch: this.#snapshot.epoch + 1 };
+  #publish(healthy: boolean, resync = false) {
+    this.#snapshot = { healthy, epoch: this.#snapshot.epoch + (resync ? 1 : 0), subscribedRunIds: this.#subscribedRunIds };
     for (const listener of this.#listeners) listener();
   }
   #send(message: LiveDeliveryClientMessage) {
@@ -27,7 +30,11 @@ export class LiveTranscriptInterests {
     if (!this.#socket || !this.#capable) return;
     const message: LiveDeliveryClientMessage = { type: "live.interests", version: 1, revision: ++this.#revision,
       runIds: [...this.#counts.keys()].sort().slice(0, 1_000) };
-    this.#publish(false);
+    this.#sentRunIds = message.runIds;
+    // Unchanged interests remain subscribed while the replacement is pending.
+    // Newly acquired interests become healthy only after their own ACK.
+    this.#subscribedRunIds = new Set(this.#sentRunIds.filter(id => this.#subscribedRunIds.has(id)));
+    this.#publish(this.#snapshot.healthy);
     this.#send(message);
   }
   acquire(runIds: readonly string[]): () => void {
@@ -48,11 +55,12 @@ export class LiveTranscriptInterests {
     };
   }
   open(socket: Sender) {
-    this.#socket = socket; this.#capable = false; this.#revision = 0; this.#acknowledged = 0;
-    this.#publish(false);
+    this.#socket = socket; this.#capable = false; this.#revision = 0; this.#acknowledged = 0; this.#lastResyncRevision = 0;
+    this.#subscribedRunIds = new Set();
+    this.#publish(false, true);
     this.#send({ type: "live.hello", version: 1, capabilities: ["run-interests"] });
   }
-  close() { this.#socket = null; this.#capable = false; this.#publish(false); }
+  close() { this.#socket = null; this.#capable = false; this.#subscribedRunIds = new Set(); this.#publish(false, true); }
   receive(value: unknown): boolean {
     if (!value || typeof value !== "object") return false;
     const frame = value as { type?: string; version?: number; capabilities?: unknown; revision?: number };
@@ -62,10 +70,17 @@ export class LiveTranscriptInterests {
       if (!this.#capable) { this.#capable = true; this.#replace(); }
     } else if (frame.type === "live.subscribed" && frame.revision === this.#revision && this.#acknowledged !== frame.revision) {
       this.#acknowledged = frame.revision;
+      this.#subscribedRunIds = new Set(this.#sentRunIds);
       // The protocol bounds one connection to 1,000 interests. Keep HTTP
       // fallback available when a view exceeds that limit.
       this.#publish(this.#counts.size <= 1_000);
-    } else if (frame.type === "live.resync" && frame.revision === this.#revision) {
+    } else if (frame.type === "live.resync" && Number.isSafeInteger(frame.revision)
+      && Number(frame.revision) > this.#lastResyncRevision && Number(frame.revision) <= this.#revision) {
+      // A real gap can precede an in-flight replacement ACK. Unchanged interests
+      // still need catch-up, even when the notice names the earlier revision.
+      this.#lastResyncRevision = Number(frame.revision);
+      this.#subscribedRunIds = new Set();
+      this.#publish(false, true);
       this.#replace();
     }
     return true;

@@ -46,3 +46,36 @@ it("keeps fallback available across socket-close races and excessive interests",
   release(); f.acknowledge(); expect(f.store.snapshot().healthy).toBe(true);
   expect(f.store.receive({ type: 42 })).toBe(false);
 });
+
+it("keeps acknowledged interests healthy while new interests wait for their own revision", () => {
+  const f = fixture(); f.store.acquire(["existing"]); f.store.open(f.socket); f.capable(); f.acknowledge();
+  const epoch = f.store.snapshot().epoch;
+  const priorRevision = f.sent.at(-1).revision;
+  const release = f.store.acquire(["new"]);
+  expect(f.store.snapshot()).toMatchObject({ healthy: true, epoch });
+  expect([...f.store.snapshot().subscribedRunIds]).toEqual(["existing"]);
+  f.store.receive({ type: "live.subscribed", version: 1, revision: priorRevision });
+  expect(f.store.snapshot().subscribedRunIds.has("new")).toBe(false);
+  f.acknowledge();
+  expect([...f.store.snapshot().subscribedRunIds]).toEqual(["existing", "new"]);
+  expect(f.store.snapshot().epoch).toBe(epoch);
+  release(); f.acknowledge();
+  expect(f.store.snapshot()).toMatchObject({ healthy: true, epoch });
+  expect([...f.store.snapshot().subscribedRunIds]).toEqual(["existing"]);
+});
+
+it("recovers an overflow reported before a newer interest revision was acknowledged", () => {
+  const f = fixture(); f.store.acquire(["existing"]); f.store.open(f.socket); f.capable(); f.acknowledge();
+  const overflowRevision = f.sent.at(-1).revision;
+  const epoch = f.store.snapshot().epoch;
+  f.store.acquire(["new"]);
+  f.store.receive({ type: "live.resync", version: 1, revision: overflowRevision });
+  expect(f.store.snapshot().healthy).toBe(false);
+  expect(f.store.snapshot().epoch).toBeGreaterThan(epoch);
+  const recoveringRevision = f.sent.at(-1).revision;
+  f.store.receive({ type: "live.resync", version: 1, revision: overflowRevision });
+  expect(f.sent.at(-1).revision).toBe(recoveringRevision);
+  f.acknowledge();
+  expect(f.store.snapshot().healthy).toBe(true);
+  expect([...f.store.snapshot().subscribedRunIds]).toEqual(["existing", "new"]);
+});

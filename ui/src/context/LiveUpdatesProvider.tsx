@@ -202,7 +202,10 @@ export function useTranscriptLiveStream(runIds: readonly string[], options: { co
     if (!active || !subscription?.transcripts) return;
     return subscription.transcripts.acquire(key ? key.split(",") : []);
   }, [active, subscription, key]);
-  return active ? state : DISCONNECTED_TRANSCRIPT_STREAM;
+  return active ? {
+    healthy: state.healthy && (key === "" || key.split(",").every(id => state.subscribedRunIds.has(id))),
+    epoch: state.epoch,
+  } : DISCONNECTED_TRANSCRIPT_STREAM;
 }
 
 function readString(value: unknown): string | null {
