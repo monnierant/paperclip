@@ -165,10 +165,10 @@ CI shards remain retained; fresh CI is required for the corrected candidate.
 
 | Layer | Latest evidence | Limit / next gate |
 | --- | --- | --- |
-| Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | A browser shard hit a lock timeout while cancelling a legacy fixture run; one scoped rerun is pending. Synthetic execution does not qualify Codex/Claude. |
-| Server | Refreshed recovery, renewal and plugin-adoption suites: 43 passed, five optional profiles skipped. The subsequent liveness-pool fix passed all 822 native executor/renewal tests with real Postgres. Saturated application-pool, cancelled row-lock wait, expiry-during-lock and natural 60-second claim-lifetime regressions passed. | Final CI/review on the renewal fix remains required. An unchanged cleanup-page test failed one earlier CI shard. Hosted admission/continuity remains outstanding. |
-| Qualification | 49 focused tests passed, including the real-Postgres observer query. Completion-during-outage review fix: all 32 boundary tests and qualification typecheck pass. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | The embedded database lifecycle test cannot initialize on this macOS host; hosted Linux verification is running. Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. |
-| Transcript delivery | `d0ece7bd2dcaed7f27fc6dea76b788bfd39dfe58`: CI green and Greptile 5/5; 37 focused review/delivery tests pass. Native and legacy two-view browser journeys pass, including zero recurring reads during settled streaming, company switching, socket reconnect, terminal catch-up and reload. | Recheck the final restacked candidate. Deterministic browser dependencies are not live-harness evidence. |
+| Runner | Initial split: 191 controller/profile, 96 Rust, 11 parity tests and three one-process fixture cases passed. After refresh onto master, protocol manifest/schema/replay and dependency-boundary checks pass. `2d72e827c991feb0f88d178aaf1ad1e0628f3e83` has Greptile 5/5 and passing unit, Rust, typecheck and build lanes. | The scoped rerun passed after an earlier browser fixture cancellation hit a lock timeout; CI is green for this revision. Synthetic execution does not qualify Codex/Claude. |
+| Server | Refreshed recovery, renewal and plugin-adoption suites: 43 passed, five optional profiles skipped. The subsequent liveness-pool fix passed all 822 native executor/renewal tests with real Postgres. Saturated application-pool, cancelled row-lock wait, expiry-during-lock and natural 60-second claim-lifetime regressions passed. | `57278aa4aa11e3106d645615632571a33764eff5` has passing CI and Greptile 5/5 with no unresolved findings. An earlier unchanged cleanup-page failure is retained. Hosted admission/continuity remains outstanding. |
+| Qualification | 80 focused tests, the separately executed real-Postgres observer and both embedded-database ownership tests in Linux pass. `29606367add9d6bc0fbc5ae86f8b41ac9392cb61` has passing CI and Greptile 5/5. Short and full 300-second immutable A→B→A startup smokes passed, with zero agent turns. | Active A/B/A, real migration change, natural stale-owner partition, representative concurrent admission and hosted proof remain outstanding. Local Linux ownership proof does not qualify a hosted agent. |
+| Transcript delivery | Native notification and per-run catch-up isolation corrections pass 75 focused tests, UI typecheck, token gates and the native two-view/reconnect/reload journey. Earlier native and legacy browser journeys and 37 delivery regressions pass. | An earlier CI attempt failed the unchanged cleanup-pagination timing test; the unchanged suite passes all 14 tests in local Linux and passes the next CI run. Final revision checks and review remain the PR gate. Deterministic browser dependencies are not live-harness evidence. |
 
 The supervisor observes HTTP readiness, natural ownership acquisition,
 authenticated attachment, resumed canonical ingestion, and backlog settlement
@@ -226,6 +226,46 @@ upgrade-manifest input. No local Daytona/model credentials are configured.
 Workflow changes on this branch cannot replace its required default-branch
 workflow authorization. Hosted continuity remains unqualified until an authorized
 path can build the image and consume the immutable A/B artifacts.
+
+After refreshing the stack onto master, workspace typecheck and all 43 targeted
+recovery, renewal and plugin-adoption tests passed (five optional profiles skipped).
+Master already fixed the stale stylesheet-preload browser fixture. Runner, server
+and qualification CI pass at the revisions above. The older broad Linux source
+verification of `c7bdc72416c98b6781b11452eba878036a9f862a`,
+[run 40127795703](https://github.com/paperclipai/paperclip/actions/runs/40127795703),
+was cancelled after the missing embedded-database tests passed directly in Linux.
+It is not a full-source pass. Current revision CI remains required.
+
+### Transcript delivery measurements
+
+The fixed workload emits 1,024 events of 2,048 characters in bursts of 16. These
+are measurements of the in-process delivery boundary with simulated sockets.
+They exclude canonical persistence, real network behavior, browser rendering,
+and production capacity. Heap deltas depend on garbage collection.
+
+| Views | Full transcript deliveries | Encoded bytes | Authorization calls | Elapsed ms | CPU ms | Heap delta (bytes) | p95 delivery ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Zero interested views | 0 | 230 | 1 | 2.310 | 3.014 | +1,364,856 | — |
+| One view | 1,024 | 2,259,853 | 1,024 | 8.205 | 18.437 | +2,254,512 | 0.082334 |
+| Three browser connections | 3,072 | 6,779,559 | 3,072 | 12.543 | 12.780 | −2,520,744 | 0.124167 |
+| Congested connection | 464 | 1,023,959 | 465 | 2.954 | 2.903 | −2,499,248 | 0.038083 |
+
+The zero-interest case coalesced one lightweight activity notification. The
+normal one-view peak retained queue was 16 items / 35,344 bytes. The congested
+case requested resynchronization while staying inside the delivery bound.
+Private receipt: `/tmp/paperclip-live-delivery-cost-20261024.json`.
+
+The native Playwright journey passed in 39.5 seconds (50.8 including setup) on
+`267d221f4659ff17d95c99ad5fac5e77f37c8538` plus its test-only transport fault
+injection and document-scoped connection accounting. It used a real runner,
+disposable Docker Postgres, and the deterministic Codex app-server. The run
+`efd7ca4d-7b63-4b02-8312-44bbcad32f91` completed once; both views retained the
+final output through reload and the business comment table contained one final
+comment. There were zero transcript history requests during a settled 2.5-second
+streaming interval, exceeding the fallback's 2-second poll interval. Earlier
+attempts exposed obsolete test selectors, provider-discovery precedence, and
+Chromium's failure to close existing sockets during offline emulation; none was
+recorded as a passing reconnect check.
 
 ## Evidence layers
 
@@ -486,3 +526,188 @@ can retry within the original deadline, but a lost or late response cannot
 restore expired authority. This adds active-run SQL around renewal; it does not
 change the zero-per-text-checkpoint-write or idle-SQL gates. The text-chunk cost
 measurement above excludes periodic renewal overhead.
+
+### Restacked candidate and hands-on browser evidence (2026-10-24)
+
+Candidate `54fc7c6494470a9d553ef7bce7d57b3f5a57d7ba` passed full workspace
+typecheck and build, 80 focused qualification tests, and the separately executed
+real-Postgres recovery observer. This includes server renewal fix
+`57278aa4aa11e3106d645615632571a33764eff5` and qualification fixes through
+`29606367add9d6bc0fbc5ae86f8b41ac9392cb61`. Final-head CI remains the PR gate;
+these local results do not replace it.
+
+A hands-on in-app-browser journey used that candidate, the real runner, the
+deterministic Codex app-server and a disposable Docker database. Starting at the
+dashboard, the operator created TRA-1 through New Task, opened it from Recent
+Tasks, observed live commentary, navigated to Tasks while it was running, returned
+to its completed answer and reloaded it. The result and source link remained
+visible. API inspection confirmed one successful run
+`09cff1ec-5340-48e4-97f0-12334052e4aa` and one final business comment.
+
+Functional outcome: passed. The observed desktop experience was usable, with no
+error banner, duplicate result or lost output. A normal loading skeleton appeared
+on navigation; an unrelated announcement overlay was dismissed. The screenshots
+do not establish smoothness between every sampled frame. No mobile or live-model
+claim is made. Final screenshot: `/tmp/paperclip-transcript-manual-completed-20261024.jpg`.
+
+### Native notification catch-up correction (2026-10-24)
+
+Review found that a consecutive native commit notification could be mistaken for
+a complete transcript row. The notification contains no PRP body. Native views
+now request canonical history through its sequence and never merge the empty
+notification over text. The 73 focused hook, projection and sequence tests pass,
+including consecutive notifications, delayed duplicates, a notification racing
+an older read, failed-read recovery and zero recurring reads for complete live
+PRP rows. These tests use the real native transcript projection. Token gates pass.
+Payload-free notifications cause event-driven history reads; this is distinct
+from the zero recurring reads during settled negotiated streaming.
+UI typecheck and the native two-view browser journey also pass after this fix
+(39.1-second journey, 53.4 seconds total). That journey rebuilds the shipped UI,
+uses the real runner with the deterministic Codex app-server, and verifies socket
+reconnect, company changes, terminal catch-up, reload and one final business
+comment. It does not qualify a live provider or hosted upgrade.
+
+### Linux ownership proof and retained CI failure (2026-10-24)
+
+The previously blocked embedded-Postgres ownership test passes in a disposable
+Linux ARM64 container: both tests in `controller-database.test.ts` pass. Killing
+the serving client preserves the same database start time and subsequent writes;
+the second test rejects paths outside the fixture and leaves external database
+configuration untouched. The source checkout is read-only. A temporary dependency
+overlay supplies the matching Linux native packages and an unchanged copy of the
+repository's patched embedded-Postgres package. No test or production behavior
+was changed for this proof. Initial container attempts failed on missing platform
+bindings, Vite cache writes, resolver recursion and misplaced native libraries;
+their logs are retained with the passing attempt. This is local Linux evidence,
+not hosted Daytona evidence.
+
+CI run 40130375278 on code revision `09d1590432` passed every check except the
+unchanged historical-cleanup pagination test: it observed 32 inspections where
+33 were expected. Its fixed clock advances can precede completion of asynchronous
+database work and registration of the following deadline. The same unchanged
+suite passes all 14 tests in the isolated Linux container. The failed CI attempt
+is retained and a bounded shard retry was requested; neither test assertions nor
+production scheduling were weakened. Final CI status remains visible on the PR.
+
+### Independent native catch-up (2026-10-24)
+
+Review subsequently found that a run's live notifications restarted the shared
+history effect, aborting slow historical reads for sibling runs. Live catch-up
+now addresses only the affected run. In-flight reads and retry timers are bounded
+per run; terminal notifications coalesce into one follow-up read without aborting
+the current request. Both regression tests fail against the preceding code and
+pass after the correction. One holds two historical pages while a sibling receives
+repeated commit and terminal notifications; the other verifies terminal catch-up
+does not abort or overlap a request. All 75 focused tests, UI typecheck and token
+gates pass. The native browser journey passes again (39.6 seconds, 51.9 seconds
+including setup), including two views, company changes, socket recovery, terminal
+catch-up, reload and exactly one business comment.
+
+### Agent Detail event preservation (2026-10-24)
+
+A delayed native commit signal could overwrite a full saved event in Agent
+Detail. Both page variants now keep signals out of the merge and require canonical
+history only when their persisted cursor does not cover the signal. Both new
+regressions fail on the prior merge; all eight page regressions, UI typecheck and
+token gates pass. Full live rows still merge without recurring history reads.
+The extended browser journey passes (42.3 seconds; 56.7 seconds including setup),
+covering the existing two-view/reconnect/completion flow plus the agent's run-event
+view and reload. It uses the real runner, deterministic Codex app-server and owned
+Postgres. Run `7fcdcc41-e035-4bca-88ea-0bc079083b03` completed once. This remains
+browser evidence, not live-harness or hosted-upgrade qualification.
+
+### Agent Detail reader isolation (2026-10-24)
+
+The next transcript review found that one native commit signal restarted both
+Agent Detail history readers. Event history and shell logs now refresh separately
+in both page variants. Each reader finishes its current page and coalesces
+terminal notifications into one follow-up. Four regressions hold either reader
+while the other receives repeated updates; all fail on the preceding code and
+pass with the correction. The first fixture omitted the required agent ID; the
+corrected fixture was replayed against both implementations before acceptance.
+All 43 focused page/transcript tests, UI typecheck and token gates pass. The actual
+native two-view/reconnect/reload and Agent Detail journey passes in 46.1 seconds,
+with real Runner, deterministic Codex app-server and disposable Postgres. Run
+`b7259b33-bdae-402c-aa25-cc2d827ff454` completed once with one final business comment.
+This result remains distinct from hosted upgrade qualification.
+
+
+### Fresh admission renewal and fixture-key isolation (2026-10-24)
+
+Review found that fresh remote admission acquired its lease before tracing,
+accounting-history reads and retained-session preparation, but started renewal
+only afterward. The startup owner now starts the existing renewal immediately
+after the claim transaction commits and drains it on preparation failure. No new
+renewal cadence or idle work is introduced. The controlled preparation-failure
+regression fails on the previous implementation. A real-Postgres experiment holds
+the claim trace sink until two seconds beyond the original 60-second lease and
+confirms the same owner, same attempt and a naturally extended deadline; it
+passes in 74.17 seconds. All 824 executor/renewal tests and server typecheck pass.
+
+The first Postgres fixture used a non-UUID lease identifier; the lease assertions
+passed but fixture cleanup failed. The corrected fixture passes. An earlier full
+suite could not start embedded Postgres because of host semaphore exhaustion.
+The external disposable-Postgres run exposed a cleanup-order regression: awaiting
+renewal shutdown before removing the settled startup let detachment reacquire the
+old session. Removing the startup synchronously before yielding fixes it; the
+preceding 823/824 result is retained alongside the final 824/824 result. The final
+run took 625.56 seconds while performing fresh migrated databases for the warm
+ownership cases; database activity confirmed progress during that run.
+
+The qualification supervisor now removes ambient inline/file master-key overrides
+at its existing process-launch boundary, matching the serving child's fixture
+configuration. A separate observer child decrypts the actual stored checkpoint
+under each hostile ambient override using the same fixture key, without changing
+any observed rows. This regression fails with the previous launcher and passes
+with the fix (6.39 seconds); 134 observer/support/installed-artifact tests pass.
+No recovery or cryptography implementation was added to the observer.
+
+CI attempts 40146472407 and 40146502737 are retained: the former hit the unchanged
+agent-device-login route timeout and a following session conflict; the latter
+hit EADDRINUSE on port 46274 in the unchanged workspace-runtime HTTPS test. These
+are distinct from the fixed lease/observer findings; final candidate CI must run
+again rather than deleting the failed attempts or weakening those assertions.
+
+Hosted acceptance remains open. The trusted workflow was rechecked against master:
+it has no per-run image-build capacity override or immutable A/B artifact-manifest
+input and still selects the same public-pr fleet used by the earlier BuildKit
+ENOSPC failure. No repeat paid image build was launched against unchanged capacity.
+The outstanding hosted upgrade/rollback evidence still requires that infrastructure
+and artifact-input path; local/CI success does not close this acceptance gap.
+
+
+### Bounded event browsing and stable shared interests (2026-10-24)
+
+The subsequent transcript review found three presentation defects: Agent Detail
+automatically drained every saved event, live retention dropped opening details,
+and unrelated interest replacements aborted active history readers. Agent Detail
+now automatically reads one 1,000-row page, then offers explicit pagination while
+full live delivery continues. The live window retains the first 200 events plus
+the latest 2,000, preserving opening details through completion. Explicit page
+failures keep existing rows and expose an error with retry. Task transcript
+recovery still drains its canonical history normally.
+
+The shared interest owner now tracks acknowledged run IDs independently of the
+connection's recovery generation. Existing interests remain healthy through
+unrelated replacements; new interests require their own ACK. Connection changes
+and explicit overflow resynchronization still trigger catch-up. An additional
+regression covers overflow from the previous revision while a new interest ACK
+is pending, so that optimization cannot hide a real gap.
+
+All seven review regressions fail on the preceding source for their expected
+assertions: automatic page count, retained opening details, interrupted native
+and legacy reads, and acknowledgement scope. The additional overflow-race test
+fails before its correction. All 48 focused transcript tests, final UI typecheck
+and token gates pass. Initial large-DOM runs exceeded the five-second test budget;
+the two expanded rendering cases now have explicit 30-second budgets, with their
+original behavioral assertions unchanged. The final suite took 16.64 seconds.
+The earlier partial runs and the corrected before/after replay are retained.
+
+The final native browser journey passes on source commit `a1f75df8a5` in 59.2
+seconds (1.2 minutes including setup), rebuilding the shipped UI and using the
+real runner, deterministic Codex app-server and owned disposable Postgres. Run
+`766f50cd-e0a1-48ff-afed-b779c6abd29a` completes once with one business comment;
+two views, company switching, socket recovery, terminal catch-up, reload and Agent
+Detail events pass. A preceding browser run also passed in 58.5 seconds before
+the extra overflow-race correction. These are browser/presentation results, not
+live-provider or hosted-upgrade evidence.
