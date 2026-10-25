@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "../../packages/db/src/index.js";
+import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig } from "./server-config.js";
 
@@ -19,6 +20,9 @@ it("keeps an unmigrated fixture database alive when its serving client dies", as
     database = await prepareControllerDatabase(configPath, root);
     const config = JSON.parse(await readFile(configPath, "utf8"));
     expect(config.database.mode).toBe("postgres");
+    await mkdir(path.dirname(config.secrets.localEncrypted.keyFilePath), { recursive: true });
+    await writeFile(config.secrets.localEncrypted.keyFilePath, "fixture-key");
+    await expect(assertEmbeddedDatabaseIsolation(configPath, root)).resolves.toBeUndefined();
     db = createDb(config.database.connectionString);
     const before = await db.$client`select pg_postmaster_start_time()::text as started`;
     expect(await db.$client`select tablename from pg_tables where schemaname = 'public'`).toEqual([]);
@@ -44,6 +48,10 @@ it("keeps an unmigrated fixture database alive when its serving client dies", as
     await db.$client`create table replacement_probe (id integer primary key)`;
     await db.$client`insert into replacement_probe values (1)`;
     expect(await db.$client`select count(*)::integer as count from replacement_probe`).toEqual([{ count: 1 }]);
+    await db.$client.end({ timeout: 1 }); db = undefined;
+    await database.cleanup(); database = undefined;
+    // The launcher grades isolation after the supervisor has shut down.
+    await expect(assertEmbeddedDatabaseIsolation(configPath, root)).resolves.toBeUndefined();
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await db?.$client.end({ timeout: 1 });

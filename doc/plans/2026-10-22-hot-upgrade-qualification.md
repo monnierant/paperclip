@@ -711,3 +711,40 @@ two views, company switching, socket recovery, terminal catch-up, reload and Age
 Detail events pass. A preceding browser run also passed in 58.5 seconds before
 the extra overflow-race correction. These are browser/presentation results, not
 live-provider or hosted-upgrade evidence.
+
+
+### Supervisor isolation and initial history errors (2026-10-25)
+
+The final launcher check still required embedded database mode, although upgrade
+qualification correctly moves its fixture Postgres into the supervisor's process
+tree and connects the serving child through normal Postgres mode. This could
+reclassify a successful recovery as a permanent infrastructure failure. The
+supervisor now records its fixture ownership only after starting the database;
+the existing isolation check accepts that exact local connection after verifying
+the fixture/config/physical data-directory identity, configured port and database
+marker. Missing receipts, foreign connections/owners, mismatched ports and a
+symlink escaping the fixture remain rejected. The valid owned-connection regression
+fails before the fix; the five rejection cases already pass.
+
+All 117 local isolation/support tests and runner-E2E typecheck pass. A disposable
+Linux container runs the real Postgres ownership experiment plus isolation cases:
+all eight pass in 2.24 seconds. The actual database remains unchanged when its
+serving client is killed, and the launcher check also passes after the supervisor
+stops the database. The first Linux attempt lacked a writable Vite cache at the
+actual test-local path; mounting only that temporary cache fixes the environment
+while keeping repository source read-only. This proves fixture ownership, not
+hosted agent continuity.
+
+Review also found that Agent Detail's empty-state return hid a first history-read
+error before the error panel could render. Both variants now display that failure
+and an explicit Retry events action even with no existing rows. Both new page
+regressions fail before the correction. All 50 focused transcript tests, UI
+typecheck and token gates pass. The extended native browser journey passes in
+43.9 seconds (58.3 seconds including setup): it forces a 503 for initial event
+history while presenting an empty shell log, verifies the error rather than an
+empty-state claim, then restores the real route and clicks Retry events to recover
+canonical output. Run `1c345f26-0acb-47af-aa76-8f6e2e05ca4d` still completes once
+with one business comment. The initial database container launch found its chosen
+port occupied; that listener was left alone and a dynamically assigned port was
+used for the owned fixture. The prior healthy-streaming and reconnect assertions
+remain in this same journey. No hosted qualification claim is added.

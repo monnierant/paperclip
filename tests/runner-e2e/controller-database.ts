@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createEmbeddedPostgresLogBuffer, ensurePostgresDatabase, loadWithoutEmbeddedPostgresExitHooks,
   prepareEmbeddedPostgresNativeRuntime } from "../../packages/db/src/index.js";
+import { recordControllerDatabaseOwnership } from "./instance-isolation.js";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
 
 export async function prepareControllerDatabase(configPath: string, temporaryRoot: string) {
@@ -30,6 +31,8 @@ export async function prepareControllerDatabase(configPath: string, temporaryRoo
     started = true;
     const base = `postgres://paperclip:paperclip@127.0.0.1:${config.database.embeddedPostgresPort}`;
     await ensurePostgresDatabase(`${base}/postgres`, "paperclip");
+    await recordControllerDatabaseOwnership({ configPath, temporaryRoot, dataDirectory: directory,
+      connectionString: `${base}/paperclip` });
     config.database = { ...config.database, mode: "postgres", connectionString: `${base}/paperclip` };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
     return { cleanup: async () => { await database.stop(); } };
