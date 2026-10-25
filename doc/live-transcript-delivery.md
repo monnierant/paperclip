@@ -65,7 +65,8 @@ existing explicit pagination. Agent Detail event history also reads at most one
 automatic history reads until the user requests the next page. Full live events
 continue to arrive. Live retention keeps the opening 200 events (including the
 invocation card) plus the latest 2,000, including through terminal transition.
-Completed runs retain explicitly requested history. Older clients and servers
+Completed runs retain explicitly requested history. Initial and paginated read
+failures remain visible, preserve loaded rows, and offer **Retry events**. Older clients and servers
 retain fallback polling when no explicit event page is waiting.
 
 ## Backpressure

@@ -111,6 +111,21 @@ test("native transcript survives two views and reload through negotiated streami
     await expect(eventDetails.getByText("STREAM-42: The launch has two stages.", { exact: false }).first()).toBeVisible();
     await page.reload();
     await expect(eventDetails.getByText("STREAM-42: The launch has two stages.", { exact: false }).first()).toBeVisible();
+    const eventsRoute = `**/api/heartbeat-runs/${runId}/events?*`;
+    const logRoute = `**/api/heartbeat-runs/${runId}/log?*`;
+    // Present a real history read failure before any event or shell rows hydrate.
+    await page.route(eventsRoute, route => route.fulfill({ status: 503, json: { error: "History temporarily unavailable" } }));
+    await page.route(logRoute, async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), content: "", nextOffset: 0 } });
+    });
+    await page.reload();
+    await expect(page.getByText("Could not load events. Try again.", { exact: true })).toBeVisible();
+    await expect(page.getByText("No log events.", { exact: true })).toHaveCount(0);
+    await page.unroute(eventsRoute); await page.unroute(logRoute);
+    await page.getByRole("button", { name: "Retry events", exact: true }).click();
+    await expect(eventDetails.getByText("STREAM-42: The launch has two stages.", { exact: false }).first()).toBeVisible();
+    await expect(page.getByText("Could not load events. Try again.", { exact: true })).toHaveCount(0);
     await page.screenshot({ path: info.outputPath("native-agent-events.png"), fullPage: true });
     await info.attach("delivery-evidence", { body: JSON.stringify({ dependency: "deterministic Codex app-server", runId: runs[0].id,
       connections, healthyPollingReads, negotiated: frames.some(frame => frame.type === "live.subscribed"),

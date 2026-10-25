@@ -249,3 +249,31 @@ it.each([
     expect([events.mock.calls.length, log.mock.calls.length]).toEqual(settled);
   } finally { await act(async () => root.unmount()); }
 });
+
+it.each([LogViewer, ProductionLogViewer])("shows and retries an initial event-history failure instead of claiming empty history (%#)", async Viewer => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  events.mockRejectedValue(new Error("history unavailable"));
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "succeeded" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<Viewer run={run} adapterType="paperclip_runner" />));
+    expect(container.textContent).toContain("Could not load events. Try again.");
+    expect(container.textContent).not.toContain("No log events.");
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(events).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Could not load events. Try again.");
+    events.mockResolvedValueOnce([{ id: 1, seq: 1, runId: run.id, companyId: run.companyId, agentId: run.agentId,
+      eventType: "item.completed", message: "Recovered history", payload: {}, stream: null, level: null,
+      color: null, createdAt: new Date() }]);
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry events");
+    expect(retry).toBeDefined();
+    await act(async () => retry!.click());
+    expect(container.textContent).toContain("Recovered history");
+    expect(container.textContent).not.toContain("Could not load events. Try again.");
+    await act(async () => vi.advanceTimersByTimeAsync(90_000));
+    expect(events).toHaveBeenCalledTimes(3);
+  } finally { await act(async () => root.unmount()); }
+});

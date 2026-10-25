@@ -4136,7 +4136,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
-  if (events.length === 0 && logLines.length === 0 && !logError) {
+  if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
     return <p className="text-xs text-muted-foreground">No log events.</p>;
   }
 
@@ -4286,9 +4286,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
           {eventsError && <p className="text-sm text-destructive">{eventsError}</p>}
-          {hasMoreEvents && (
+          {(hasMoreEvents || eventsError) && (
             <Button variant="outline" size="sm" disabled={loadingMoreEvents} onClick={() => loadMoreEventsRef.current?.()}>
-              {loadingMoreEvents ? "Loading..." : "Load more events"}
+              {loadingMoreEvents ? "Loading..." : eventsError ? "Retry events" : "Load more events"}
             </Button>
           )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
