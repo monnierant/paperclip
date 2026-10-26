@@ -41,6 +41,7 @@ import {
   runControlPlanePortConformance,
 } from "../../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
@@ -62,7 +63,7 @@ import {
 } from "../live-events.js";
 
 describe("PaperclipControlPlanePort conformance", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
   let db: ReturnType<typeof createDb>;
   const contractId = "00000000-0000-4000-8000-000000000004";
   const contractSha = "phase6-conformance-contract";
@@ -83,7 +84,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   const governanceRunnerId = "00000000-0000-4000-8000-000000000021";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
+    temporary = await startRecoveryPostgres("paperclip-native-port-");
     db = createDb(temporary.connectionString);
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     await db.insert(companies).values({ id: identity.companyId, name: "Phase 6", issuePrefix: "P6C" });
@@ -593,7 +594,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     );
   });
 
-  it("signals committed safe progress after row visibility without forwarding its payload", async () => {
+  it("streams committed native rows and deltas after visibility without repeating receipts", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const issueId = "40000000-0000-4000-8000-000000000042";
     const runId = "41000000-0000-4000-8000-000000000042";
@@ -722,8 +723,10 @@ describe("PaperclipControlPlanePort conformance", () => {
         issueId,
         seq: 1,
         eventType: "tool.execution.started",
+        stream: "system",
+        level: "info",
+        payload: { prpEvent: progressEvent },
       }]);
-      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
 
       await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
         disposition: "duplicate",
@@ -755,10 +758,14 @@ describe("PaperclipControlPlanePort conformance", () => {
         ...progressEvent,
         sourceEventId: "safe-progress-signal:3",
         sourceSeq: 3,
-        eventType: "turn.started",
-        payload: {},
+        eventType: "item.delta",
+        itemId: "streaming-message",
+        payload: { kind: "agentMessage", text: "still writing" },
       })).resolves.toMatchObject({ disposition: "committed" });
-      expect(observed).toHaveLength(1);
+      expect(observed).toHaveLength(2);
+      expect(observed[1]).toMatchObject({ seq: 3, eventType: "item.delta", payload: {
+        prpEvent: { eventType: "item.delta", payload: { text: "still writing" } },
+      } });
       expect(committedCallbacks).toEqual([
         "safe-progress-signal:1",
         "safe-progress-signal:2",

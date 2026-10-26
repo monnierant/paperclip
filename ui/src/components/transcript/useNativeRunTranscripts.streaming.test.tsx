@@ -71,6 +71,24 @@ it("merges history arriving after live output without losing rows or duplicating
   expect(latest.transcriptByRun.get("run-1")).toEqual(nativeRunEventsToTranscript([row(1), row(2), row(3, "canonical row 3")]));
 });
 
+it.each(["agentMessage", "reasoning"])("streams %s deltas after hydration without recurring history reads", async kind => {
+  events.mockResolvedValueOnce([row(1)]);
+  await render(); await negotiate();
+  const reads = events.mock.calls.length;
+  const delta = row(2, "still writing");
+  delta.eventType = "item.delta";
+  const envelope = delta.payload!.prpEvent as Record<string, unknown>;
+  envelope.eventType = "item.delta";
+  envelope.payload = { kind, text: "still writing" };
+  await act(async () => {
+    for (const listener of listeners) listener({ id: 2, companyId: delta.companyId,
+      type: "heartbeat.run.event", createdAt: delta.createdAt.toISOString(), payload: { ...delta } });
+    await vi.advanceTimersByTimeAsync(90_000);
+  });
+  expect(JSON.stringify(latest.transcriptByRun.get("run-1"))).toContain("still writing");
+  expect(events).toHaveBeenCalledTimes(reads);
+});
+
 it("fetches a consecutive native commit signal and never replaces its complete row with a delayed signal", async () => {
   events.mockResolvedValueOnce([row(1)]);
   await render(); await negotiate();
