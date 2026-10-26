@@ -849,6 +849,7 @@ describe("remote runner process supervision", () => {
       await vi.waitFor(() => expect(healthyProbes).toBe(1), { timeout: 5_000 });
       expect(settled).toBe(false);
       expect(handle.isExitConfirmed?.()).toBe(false);
+      expect(handle.startedAt).toBe("2026-10-19T00:00:00.000Z");
       expect(() => process.kill(child!.pid!, 0)).not.toThrow();
       expect((await readFile(marker, "utf8")).split("\n")[1]).toBe(String(child!.pid));
       expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
