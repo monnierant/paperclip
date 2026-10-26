@@ -5763,6 +5763,9 @@ describe("native governed waits", () => {
 });
 
 type LeaseCoordinator = {
+  controllerBootId?: string;
+  controllerPid?: number;
+  controllerGeneration?: number;
   runId: string;
   companyId: string;
   issueId: string;
@@ -6023,6 +6026,52 @@ describe("native startup cancellation fence", () => {
 });
 
 describe("native startup restart detachment", () => {
+  it.each(["ordinary", "recovered", "stale-claim", "newer-detach"] as const)("preserves same-server detach fencing for %s admission", async mode => {
+    const issueService = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    const current = structuredClone(execution);
+    current.binding.runId = `same-server-recovery-${mode}`;
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    await detachNativeSessionsForRestart([current.binding.runId]);
+    const db = leaseDb(current, { leaseOwner: "recovered-controller", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1 });
+    let newerDetach: Promise<unknown> | undefined;
+    const transaction = db.transaction.bind(db);
+    if (mode === "newer-detach") db.transaction = (async operation => {
+      const result = await transaction(operation);
+      newerDetach ??= detachNativeSessionsForRestart([current.binding.runId]);
+      return result;
+    }) as Db["transaction"];
+    const admitted = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession({ detachControllerForRestart: async () => undefined });
+      admitted();
+      throw new NativeControllerDetachedForRestartError();
+    });
+    try {
+      const admission = executePaperclipNativeSession({ db, execution: current, runnerInstanceId: "runner",
+        leaseOwner: "recovered-controller", ...(mode === "ordinary" ? {} : { restartRecovery: {
+          kind: "bootstrap_incomplete" as const, runId: current.binding.runId, leaseOwner: "recovered-controller",
+          controllerGeneration: mode === "stale-claim" ? 1 : 2, providerAttempt: 1,
+          restartKind: "hard" as const, recoveryRequestId: null,
+        } }) });
+      if (mode === "recovered") {
+        await expect(admission).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+        expect(admitted).toHaveBeenCalledOnce();
+        expect(state.execute).toHaveBeenCalledOnce();
+      } else if (mode === "stale-claim") {
+        await expect(admission).rejects.toThrow("native_restart_recovery_claim_changed");
+        expect(state.execute).not.toHaveBeenCalled();
+      } else {
+        await expect(admission).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+        expect(admitted).not.toHaveBeenCalled();
+        if (mode === "ordinary") expect(state.execute).not.toHaveBeenCalled();
+      }
+    } finally { await newerDetach; issueService.mockRestore(); }
+  });
+
   it("uses one admission deadline for the whole restart sweep", async () => {
     const inputs = ["first", "second"].map(label => {
       const input = structuredClone(execution);

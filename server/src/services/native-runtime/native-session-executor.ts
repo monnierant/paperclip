@@ -7677,7 +7677,7 @@ export async function executePaperclipNativeSession(input: {
     }
   }
   const runId = input.execution.binding.runId;
-  if (nativeRunsDetachingForRestart.has(runId)) {
+  if (nativeRunsDetachingForRestart.has(runId) && input.restartRecovery?.runId !== runId) {
     throw new NativeControllerDetachedForRestartError();
   }
   if (nativeSessionStartups.has(runId)) {
