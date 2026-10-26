@@ -748,3 +748,68 @@ with one business comment. The initial database container launch found its chose
 port occupied; that listener was left alone and a dynamically assigned port was
 used for the owned fixture. The prior healthy-streaming and reconnect assertions
 remain in this same journey. No hosted qualification claim is added.
+
+### First hosted stress campaign and preserved identity failure (2026-10-26)
+
+A new, synthetic test tenant ran the exact published core-only candidate
+`00ebac324cc9016a832e7a51e01652af0cbcc758` on Linux, real Postgres and Daytona.
+The harness was real native Codex with OpenAI `gpt-5.4-mini`. The authenticated
+qualification gateway allowed local tools and namespaces and removed hosted web
+search. This is evidence for that profile, not Claude or a full Cloud composition.
+
+All 13 admitted tasks succeeded: an initial baseline, a short restart, ten
+concurrent long-outage tasks and fresh post-restart work. For the ten-way case,
+the main Node process was frozen for 300 seconds and then killed. Postgres and
+Daytona stayed running. No lease timestamp was edited. HTTP readiness was first
+observed at 322.354 seconds after the fault began. Natural ownership claims
+occurred at about 315.5–315.9 seconds. All original runners authenticated again
+and new canonical ingestion was confirmed by 399.505 seconds, inside the
+original 420-second grace.
+
+Each original workload completed 480 steps, including 298–300 during the
+outage. Its PID, boot/start identity and nonce were unchanged. The largest step
+gap was 1.135 seconds. Independent recomputation confirmed all ten final hash
+chains and exclusive effect files. Each original turn produced one completion,
+result acceptance and terminal receipt. All ten workspace exports committed,
+and no scheduled or active recovery remained. Fresh native work started in
+1.299 seconds while seven original runs were still active, then completed.
+
+**Strict qualification failed.** The run, runner, native session, PID and sandbox
+lease stayed unchanged, but the recorded `processStartedAt` changed to attachment
+time in all ten runs. The identity assertion remains in place; the campaign is
+not green. The Runner transport reported controller-construction time, and the
+remote process handle did not expose the birth time already verified in its
+marker. Fixes belong to the runner and server PRs respectively. The two focused
+regressions fail before their fixes and pass after. All 293 transport tests,
+14 remote supervision tests, repository typecheck and module/package boundary
+checks pass on the corrected source. Hosted evidence must be repeated on its
+published artifact before this failure can be closed.
+
+The first short fault attempt checked SIGSTOP synchronously and resumed before
+killing anything; it is unexercised. A bounded state-confirmation check repaired
+the injector before the actual short and long faults. Setup also preserved
+hosted-tool rejection, a credential-directory lock timeout and intermittent
+Railway SSH timeouts. Normal finalization released ephemeral sandboxes; final
+proof files were read from their successfully committed workspace exports with
+exact company/run/workspace binding and path containment.
+
+Three samples during the freeze show unchanged write counters in
+`heartbeat_run_events`, `heartbeat_runs`, `native_run_finalizations` and
+`native_runner_checkpoints` while useful workload steps continued. This is not a
+healthy-streaming SQL benchmark or evidence of zero database reads. CPU/memory
+deltas, throughput savings and production capacity were not measured.
+
+Final provider receipts recorded 210 requests and **$0.735245850 estimated model
+cost**, with no unknown, conflicting or inflight charges. The original $25 cap,
+request ceiling and deadline stayed unchanged. Pricing used OpenAI's documented
+`gpt-5.4-mini-2026-03-17` snapshot rates; it is not an invoice. The product's rate
+card lacks this test model, so campaign policies explicitly allowed unpriced
+usage while the independent gateway enforced the cap. Unknown product costs
+were not replaced with invented prices. All test work settled before the gateway
+closed and test agents were paused.
+
+Different-artifact A/B and rollback, the 25-way profile and the complete browser
+viewer matrix remain open. The current Cloud campaign path still requests task
+drain before replacement. These app-only fault results do not qualify a normal
+Cloud rollout without drain. Keep deployment-policy work with its Cloud owner;
+do not weaken Core drain semantics or report active work as empty.
