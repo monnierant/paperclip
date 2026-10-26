@@ -65,7 +65,8 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     if (previousCompanyRef.current === options.companyId) return;
     previousCompanyRef.current = options.companyId;
     setEventsByRun(new Map()); setErrorsByRun(new Map()); setHydratedRunIds(new Set()); setHydratedStatusByRun(new Map());
-    projectionCacheRef.current.clear(); cursorByRunRef.current.clear(); sequencesRef.current.clear(); gapPendingRef.current.clear();
+    projectionCacheRef.current.clear(); cursorByRunRef.current.clear(); conversationOnlyByRunRef.current.clear();
+    sequencesRef.current.clear(); gapPendingRef.current.clear();
   }, [options.companyId]);
   const stream = useTranscriptLiveStream(nativeRuns.filter(run => isLive(run.status)).map(run => run.id), options, event => {
     const runId = typeof event.payload.runId === "string" ? event.payload.runId : null;

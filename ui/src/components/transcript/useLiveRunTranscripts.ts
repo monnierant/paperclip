@@ -169,7 +169,8 @@ export function useLiveRunTranscripts({
     retired.add(prior);
     if (retired.size > 8) retired.delete(retired.values().next().value!);
     retiredLogIdentitiesRef.current.set(runId, retired);
-    logOffsetByRunRef.current.set(runId, 0); pendingLogRowsByRunRef.current.delete(runId);
+    logOffsetByRunRef.current.set(runId, 0); logReadLimitByRunRef.current.delete(runId);
+    pendingLogRowsByRunRef.current.delete(runId); pendingLogRowsByRunRef.current.delete(`${runId}:records`);
     trimmedSeqFloorByRunRef.current.delete(runId); sequencesRef.current.delete(runId);
     for (const key of seenChunkKeysRef.current) if (key.includes(`:${runId}:`)) seenChunkKeysRef.current.delete(key);
     setChunksByRun(previous => new Map(previous).set(runId, []));
@@ -198,7 +199,7 @@ export function useLiveRunTranscripts({
     previousCompanyRef.current = companyId;
     setChunksByRun(new Map()); setHydratedRunIds(new Set()); setErrorsByRun(new Map());
     seenChunkKeysRef.current.clear(); trimmedSeqFloorByRunRef.current.clear();
-    pendingLogRowsByRunRef.current.clear(); logOffsetByRunRef.current.clear();
+    pendingLogRowsByRunRef.current.clear(); logOffsetByRunRef.current.clear(); logReadLimitByRunRef.current.clear();
     logIdentityRef.current.clear(); retiredLogIdentitiesRef.current.clear(); sequencesRef.current.clear();
     gapPendingRef.current.clear(); missingTerminalLogRunIdsRef.current.clear();
     absenceDeadlineByRunRef.current.clear(); prevKnownRunIdsRef.current.clear(); transcriptCacheRef.current.clear();
@@ -424,16 +425,37 @@ export function useLiveRunTranscripts({
       retryTimers.delete(run.id);
       inFlightRunIds.add(run.id);
       let failed = false;
+      let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
       let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      let rewinding = false;
+      const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
+      if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
+        const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
+        if (expandedOffset < offset) {
+          alignStartToRecord = true;
+          offset = expandedOffset;
+          rewinding = true;
+        }
+      }
       try {
         for (;;) {
           const result = await readTranscriptRequest(
-            (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }), controller.signal,
+            (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
+              signal,
+              ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
+            }), controller.signal,
           );
           if (cancelled) return;
           const binding = bindLog(run.id, result.store, result.logRef);
           if (binding === "stale") { failed = true; return; }
           if (binding === "changed" && offset !== 0) { offset = 0; continue; }
+          logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
+          if (rewinding) {
+            pendingLogRowsByRunRef.current.delete(run.id);
+            pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+            rewinding = false;
+          }
+          alignStartToRecord = false;
           setErrorsByRun(previous => {
             if (!previous.has(run.id)) return previous;
             const next = new Map(previous); next.delete(run.id); return next;
@@ -444,6 +466,7 @@ export function useLiveRunTranscripts({
           const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
           logOffsetByRunRef.current.set(run.id, next);
           if (result.nextOffset === undefined || result.content.length === 0 || next <= offset) break;
+          if (typeof run.logBytes === "number" && next >= run.logBytes && !sequence(run.id).needsCatchup) break;
           offset = next;
         }
         failed = sequence(run.id).needsCatchup;
