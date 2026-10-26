@@ -4111,6 +4111,8 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   const eventSequenceRef = useRef(new TranscriptSequence());
   const logSequenceRef = useRef(new TranscriptSequence());
   const eventsReadCursorRef = useRef(0);
+  const eventsCatchupCursorRef = useRef(0);
+  const retainedEventHistoryThroughRef = useRef(0);
   const logIdentityRef = useRef<string | null>(run.logRef ?? null);
   const retiredLogRefs = useRef(new Set<string>());
   const wasLiveRef = useRef(isLive);
@@ -4129,7 +4131,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     return "changed";
   };
   useEffect(() => {
-    eventsReadCursorRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
+    eventsReadCursorRef.current = 0; eventsCatchupCursorRef.current = 0; retainedEventHistoryThroughRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
     wasLiveRef.current = isLive;
     logIdentityRef.current = run.logRef ?? null; retiredLogRefs.current.clear();
     hasMoreEventsRef.current = false; setHasMoreEvents(false); setLoadingMoreEvents(false); setEventsError(null);
@@ -4137,13 +4139,19 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   }, [run.id, run.companyId]);
   useEffect(() => { if (isLive) wasLiveRef.current = true; }, [isLive]);
 
-  function appendEvents(rows: HeartbeatRunEvent[]) {
+  function appendEvents(rows: HeartbeatRunEvent[], retainHistory = false) {
+    if (retainHistory) retainedEventHistoryThroughRef.current = Math.max(
+      retainedEventHistoryThroughRef.current, rows.at(-1)?.seq ?? 0,
+    );
     setEvents(previous => {
       const merged = mergeRunEvents(previous, rows);
-      // Keep invocation/context rows as well as the live tail. Completed history
-      // grows only when the user requests another bounded page.
-      return isLive && merged.length > 200 + MAX_LIVE_EVENTS
-        ? [...merged.slice(0, 200), ...merged.slice(-MAX_LIVE_EVENTS)] : merged;
+      if (!isLive && !wasLiveRef.current) return merged;
+      // Explicit history pages remain available while the automatic live tail
+      // stays bounded. Catch-up must not advance the user's history cursor.
+      const retainedThrough = Math.max(200, retainedEventHistoryThroughRef.current);
+      const prefix = merged.filter(row => row.seq <= retainedThrough);
+      const tail = merged.filter(row => row.seq > retainedThrough);
+      return [...prefix, ...tail.slice(-MAX_LIVE_EVENTS)];
     });
   }
 
@@ -4185,8 +4193,8 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     appendEvents([row]);
   });
 
-  // Only HTTP advances this cursor. A full page requires explicit pagination;
-  // notifications cannot turn a long event history into an unbounded HTTP drain.
+  // History paging and delivery recovery have separate cursors: a recovered
+  // live tail cannot consume pages the user has not chosen to retain.
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
@@ -4194,34 +4202,44 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     const abort = new AbortController();
     let reading = false;
     let pendingRefresh = false;
-    const read = async (requested = false) => {
-      if (cancelled || reading || (hasMoreEventsRef.current && !requested)) return;
+    const read = async (requested = false, catchup = false) => {
+      if (cancelled) return;
+      if (reading) { if (catchup) pendingRefresh = true; return; }
+      if (hasMoreEventsRef.current && !requested && !catchup) return;
       reading = true; pendingRefresh = false; setLoadingMoreEvents(true); setEventsError(null);
       window.clearTimeout(timer); timer = undefined;
       let failed = false;
       try {
-        const cursor = eventsReadCursorRef.current;
+        const cursor = catchup ? Math.max(eventsCatchupCursorRef.current, eventsReadCursorRef.current) : eventsReadCursorRef.current;
         const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
         if (cancelled) return;
-        appendEvents(rows);
+        appendEvents(rows, !catchup);
         const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
-        eventsReadCursorRef.current = next;
+        eventsCatchupCursorRef.current = Math.max(eventsCatchupCursorRef.current, next);
         eventSequenceRef.current.confirm(next);
-        hasMoreEventsRef.current = rows.length === 1000 && next > cursor;
-        setHasMoreEvents(hasMoreEventsRef.current);
+        if (catchup) {
+          // Each request remains bounded; only a known recovery drains further.
+          // A short page settles this pass even if no live row supplied a target.
+          if (rows.length === 1000 && next > cursor) pendingRefresh = true;
+        } else {
+          eventsReadCursorRef.current = next;
+          hasMoreEventsRef.current = rows.length === 1000 && next > cursor;
+          setHasMoreEvents(hasMoreEventsRef.current);
+        }
         failed = eventSequenceRef.current.needsCatchup;
       } catch { failed = true; if (!cancelled) setEventsError("Could not load events. Try again."); }
       if (cancelled) return;
       reading = false; setLoadingMoreEvents(false); setLoading(false);
-      if (hasMoreEventsRef.current) return;
-      if (pendingRefresh) void read();
-      else if (failed || (isLive && !stream.healthy)) timer = window.setTimeout(() => void read(), 2000);
+      if (pendingRefresh) void read(false, true);
+      else if (failed || (isLive && !stream.healthy && !hasMoreEventsRef.current)) {
+        timer = window.setTimeout(() => void read(requested, catchup || eventSequenceRef.current.needsCatchup), 2000);
+      }
     };
-    // Event history and shell-log history have separate cursors and lifetimes.
-    // Live signals must not cancel either reader's useful in-flight page.
-    refreshEventsRef.current = (force = false) => { if (force) pendingRefresh = true; void read(); };
+    refreshEventsRef.current = () => { void read(false, true); };
     loadMoreEventsRef.current = () => { void read(true); };
-    void read();
+    // Reconnection, resynchronization and terminal status all receive one
+    // catch-up pass; healthy consecutive delivery does not schedule HTTP reads.
+    void read(false, eventsReadCursorRef.current > 0);
     return () => {
       cancelled = true; refreshEventsRef.current = null; loadMoreEventsRef.current = null;
       abort.abort(); if (timer !== undefined) window.clearTimeout(timer);

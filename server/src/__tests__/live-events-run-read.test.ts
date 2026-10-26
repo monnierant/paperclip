@@ -1,4 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { redactEventPayload } from "../redaction.js";
+import { redactCurrentUserValue } from "../log-redaction.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -13,22 +18,26 @@ import {
 import * as schema from "@paperclipai/db/schema/index";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { publishLiveEvent } from "../services/live-events.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 describe("live-event run read boundaries", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: Db;
   const previousPrivacy = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+  const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("live-event-run-reads-");
+    temporary = await startRecoveryPostgres("live-event-run-reads-");
     db = createDb(temporary.connectionString);
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = randomBytes(32).toString("base64");
   }, 120_000);
 
   afterAll(async () => {
     if (previousPrivacy === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousPrivacy;
+    if (previousMasterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
     await temporary?.cleanup();
   });
 
@@ -146,4 +155,60 @@ describe("live-event run read boundaries", () => {
       if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   });
+
+  it.each(["authenticated", "local_trusted"] as const)("redacts native live rows like history reads for %s viewers", async deploymentMode => {
+    const companyId = randomUUID(), viewer = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Live redaction", issuePrefix: `LR${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: viewer, membershipRole: "operator", status: "active" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Redaction fixture", adapterType: "process" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "company", status: "running" }).returning();
+    const registered = "registered-live-sentinel-value";
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(companyId, run.id, registered);
+    await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
+    const body = { prpEvent: { eventType: "item.delta", payload: { kind: "agentMessage",
+      text: `${homedir()}/synthetic.txt ${registered}`, password: "sensitive-key-sentinel" } } };
+    const sourcePayload = { runId: run.id, agentId: agent.id, seq: 1, eventType: "item.delta", payload: body };
+    const expected = await registry.redactForRun(companyId, run.id,
+      redactCurrentUserValue({ ...sourcePayload, payload: redactEventPayload(body) }, { enabled: true }));
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as Db;
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const messages: Array<{ type: string; revision?: number; payload?: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    const barrier = async () => {
+      const id = randomUUID();
+      publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: id, status: "idle" } });
+      await expect.poll(() => messages.some(message => message.payload?.agentId === id)).toBe(true);
+    };
+    try {
+      await once(socket, "open");
+      socket.send(JSON.stringify({ type: "live.interests", version: 1, revision: 1, runIds: [] }));
+      await expect.poll(() => messages.some(message => message.type === "live.subscribed" && message.revision === 1)).toBe(true);
+      const baseline = queries.length;
+      publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: sourcePayload }); await barrier();
+      expect(messages.some(message => message.type === "heartbeat.run.event")).toBe(false);
+      expect(queries.slice(baseline).some(query => query.includes("paperclipSecretRedactions") || query.includes('from "instance_settings"'))).toBe(false);
+      socket.send(JSON.stringify({ type: "live.interests", version: 1, revision: 2, runIds: [run.id] }));
+      await expect.poll(() => messages.some(message => message.type === "live.subscribed" && message.revision === 2)).toBe(true);
+      publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: sourcePayload }); await barrier();
+      const delivered = messages.find(message => message.type === "heartbeat.run.event");
+      expect(delivered?.payload).toEqual(expected);
+      expect(JSON.stringify(delivered)).not.toContain(registered);
+      expect(JSON.stringify(delivered)).not.toContain("sensitive-key-sentinel");
+      expect(JSON.stringify(delivered)).not.toContain(homedir());
+      expect(JSON.stringify(sourcePayload)).toContain(registered);
+    } finally {
+      socket.terminate();
+      await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
+      await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
 });

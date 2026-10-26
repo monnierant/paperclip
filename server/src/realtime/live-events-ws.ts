@@ -14,6 +14,10 @@ import { activityToastIdentity } from "./activity-toast-identity.js";
 import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { trackIdleWork } from "../services/task-admission.js";
+import { redactEventPayload } from "../redaction.js";
+import { redactCurrentUserValue } from "../log-redaction.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 interface WsSocket {
   readyState: number;
@@ -257,6 +261,8 @@ export function setupLiveEventsWebSocketServer(
   },
 ) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const runRedactions = createRunSecretRedactionRegistry(db);
+  const instanceSettings = instanceSettingsService(db);
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
 
@@ -350,7 +356,20 @@ export function setupLiveEventsWebSocketServer(
       if (event.type.startsWith("plugin.")) return event;
       return null;
     }
-    const delivery = createLiveEventDelivery({ socket, authorize: visibleEvent,
+    const delivery = createLiveEventDelivery({ socket, authorize: async event => {
+      const visible = await visibleEvent(event);
+      if (!visible || visible.type !== "heartbeat.run.event") return visible;
+      const payload = visible.payload.payload;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("prpEvent" in payload)) return visible;
+      const runId = visible.payload.runId;
+      if (typeof runId !== "string") return null;
+      // Match canonical native event reads after delivery authorization, including
+      // local-implicit viewers. Never publish stored native payloads directly.
+      const redacted = redactCurrentUserValue({ ...visible, payload: { ...visible.payload,
+        payload: redactEventPayload(payload as Record<string, unknown>),
+      } }, { enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs });
+      return runRedactions.redactForRun(visible.companyId, runId, redacted);
+    },
       decorate: async visible => {
         let toastEligible = false;
         try {

@@ -8,7 +8,7 @@ import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
 
-const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
+const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (_runId?: string, _cursor?: number, _limit?: number, _options?: { signal?: AbortSignal }): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
 vi.mock("@tanstack/react-query", async (original) => ({
   ...await original<typeof import("@tanstack/react-query")>(),
@@ -277,3 +277,51 @@ it.each([LogViewer, ProductionLogViewer])("shows and retries an initial event-hi
     expect(events).toHaveBeenCalledTimes(3);
   } finally { await act(async () => root.unmount()); }
 });
+
+
+it.each([LogViewer, ProductionLogViewer])("recovers a paginated live tail and preserves pages explicitly loaded afterward (%#)", async Viewer => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  log.mockResolvedValue({ content: "", nextOffset: 0 });
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" } as HeartbeatRun;
+  const rows: HeartbeatRunEvent[] = Array.from({ length: 5_000 }, (_, index) => ({ id: index + 1, seq: index + 1,
+    runId: run.id, companyId: run.companyId, agentId: run.agentId, createdAt: new Date(), eventType: "output",
+    stream: "system", level: "info", color: null, message: `activity-proof-${index + 1}-end`, payload: null }));
+  events.mockImplementation(async (_runId?: string, cursor = 0) => rows.filter(row => row.seq > cursor).slice(0, 1_000));
+  const transcripts = new LiveTranscriptInterests();
+  const listeners = new Set<CompanyLiveEventHandler>();
+  const sent: Array<{ revision?: number }> = [];
+  const subscription = { companyId: run.companyId, transcripts,
+    subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
+  const container = document.createElement("div"), root = createRoot(container);
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  const render = async (status = "running") => act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={{ ...run, status } as HeartbeatRun} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+  const emit = (row: HeartbeatRunEvent) => { for (const listener of listeners) listener({ id: row.seq,
+    companyId: run.companyId, type: "heartbeat.run.event", createdAt: row.createdAt.toISOString(), payload: { ...row } }); };
+  try {
+    await render();
+    expect(events).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      transcripts.open({ send: text => sent.push(JSON.parse(text)) });
+      transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: sent.at(-1)?.revision });
+      emit(rows[4_999]!);
+    });
+    expect(container.textContent).toContain("activity-proof-5000-end");
+    expect(events.mock.calls.some(call => call[1] === 4_000)).toBe(true);
+    const more = () => [...container.querySelectorAll("button")].find(button => button.textContent === "Load more events")!;
+    await act(async () => more().click());
+    expect(container.textContent).toContain("activity-proof-1500-end");
+    expect(events.mock.calls.at(-1)?.slice(0, 3)).toEqual([run.id, 1_000, 1_000]);
+    rows.push({ ...rows[0]!, id: 5_001, seq: 5_001, message: "resync-tail-proof" });
+    await act(async () => {
+      transcripts.receive({ type: "live.resync", version: 1, revision: sent.at(-1)?.revision, reason: "delivery_overflow" });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: sent.at(-1)?.revision });
+    });
+    expect(container.textContent).toContain("resync-tail-proof");
+    expect(container.textContent).toContain("activity-proof-1500-end");
+    rows.push({ ...rows[0]!, id: 5_002, seq: 5_002, message: "terminal-tail-proof" });
+    await render("succeeded");
+    expect(container.textContent).toContain("terminal-tail-proof");
+    expect(container.textContent).toContain("activity-proof-1500-end");
+  } finally { await act(async () => root.unmount()); }
+}, 60_000);
