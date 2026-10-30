@@ -4009,7 +4009,6 @@ async function listIssueBlockerAttentionMap(
           )
       : [];
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
-  const pendingHumanResponseIssueIds = new Set<string>();
   const canResumeAfterResponse = (issueId: string) => {
     const host = nodesById.get(issueId);
     if (
@@ -4057,7 +4056,6 @@ async function listIssueBlockerAttentionMap(
         )
           continue;
         explicitWaitingIssueIds.add(row.issueId);
-        pendingHumanResponseIssueIds.add(row.issueId);
       }
 
       const approvalRows: Array<{ issueId: string }> = await dbOrTx
@@ -4074,11 +4072,7 @@ async function listIssueBlockerAttentionMap(
             inArray(issueApprovals.issueId, chunk),
           ),
         );
-      for (const row of approvalRows) {
-        if (!canResumeAfterResponse(row.issueId)) continue;
-        explicitWaitingIssueIds.add(row.issueId);
-        pendingHumanResponseIssueIds.add(row.issueId);
-      }
+      for (const row of approvalRows) explicitWaitingIssueIds.add(row.issueId);
     }
 
     // Recovery rows are intentionally company-wide: a liveness escalation for
@@ -4416,9 +4410,7 @@ async function listIssueBlockerAttentionMap(
     });
     if (topLevelEdges.length === 0) {
       const hasLiveContinuation =
-        activeIssueIds.has(root.id) ||
-        explicitWaitingIssueIds.has(root.id) ||
-        pendingHumanResponseIssueIds.has(root.id);
+        activeIssueIds.has(root.id) || explicitWaitingIssueIds.has(root.id);
       attentionMap.set(
         root.id,
         createIssueBlockerAttention({
